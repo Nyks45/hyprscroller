@@ -1533,6 +1533,18 @@ void Row::recalculate_row_geometry()
         return;
     }
 
+    // --- STRETCH EDGES PATCH ---
+    if (active == columns.first()) {
+        active->data->set_geom_pos(max.x, max.y);
+        adjust_columns(active);
+        return;
+    } else if (active == columns.last()) {
+        active->data->set_geom_pos(max.x + max.w - active->data->get_geom_w(), max.y);
+        adjust_columns(active);
+        return;
+    }
+    // --- END PATCH --
+    
     if (modifier.get_center_column().value()) {
         double start = max.x + 0.5 * (max.w - active->data()->get_geom_w());
         active->data()->set_geom_pos(start, max.y);
