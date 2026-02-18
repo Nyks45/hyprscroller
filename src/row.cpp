@@ -1416,6 +1416,18 @@ void Row::recalculate_row_geometry()
         return;
     }
     static auto* const *center_row = (Hyprlang::INT* const *)HyprlandAPI::getConfigValue(PHANDLE, "plugin:scroller:center_row_if_space_available")->getDataStaticPtr();
+        // --- PATCH 1 START ---
+    if (active == columns.first()) {
+        active->data->set_geom_pos(max.x, max.y);
+        adjust_columns(active);
+        return;
+    } 
+    else if (active == columns.last()) {
+        active->data->set_geom_pos(max.x + max.w - active->data->get_geom_w(), max.y);
+        adjust_columns(active);
+        return;
+    }
+    // --- PATCH 1 END --
     if (**center_row && pinned == nullptr) {
         double lwidth = 0.0, rwidth = 0.0;
         for (auto col = columns.first(); col != active; col = col->next()) {
@@ -1533,17 +1545,18 @@ void Row::recalculate_row_geometry()
         return;
     }
 
-    // --- STRETCH EDGES PATCH ---
+   // --- PATCH 2 START ---
     if (active == columns.first()) {
         active->data->set_geom_pos(max.x, max.y);
         adjust_columns(active);
         return;
-    } else if (active == columns.last()) {
+    } 
+    else if (active == columns.last()) {
         active->data->set_geom_pos(max.x + max.w - active->data->get_geom_w(), max.y);
         adjust_columns(active);
         return;
     }
-    // --- END PATCH --
+    // --- PATCH 2 END ---
     
     if (modifier.get_center_column().value()) {
         double start = max.x + 0.5 * (max.w - active->data()->get_geom_w());
