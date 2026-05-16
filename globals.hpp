@@ -27,6 +27,8 @@ struct SConfig {
     SP<Config::Values::CIntValue>    collapsed_width;
     SP<Config::Values::CIntValue>    focus_history;
     SP<Config::Values::CStringValue> auto_width_rules;
+    SP<Config::Values::CIntValue>    click_edge_left;
+    SP<Config::Values::CIntValue>    click_edge_right;
 };
 
 inline SConfig g_config;

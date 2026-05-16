@@ -639,6 +639,12 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
             if (!PMONITOR)
                 return;
 
+            // exclude clicks on left/right screen edges (caelestia)
+            const auto MON_BOX = PMONITOR->logicalBox();
+            if (cursor.x < MON_BOX.x + (double)g_config.click_edge_left->value() ||
+                cursor.x > MON_BOX.x + MON_BOX.w - (double)g_config.click_edge_right->value())
+                return;
+
             for (auto& wt : parent->space()->targets()) {
                 auto t = wt.lock();
                 if (!t || !t->window())

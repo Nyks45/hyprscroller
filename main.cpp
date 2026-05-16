@@ -39,6 +39,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_config.collapsed_width          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:collapsed_width", "collapsed column width in px", 30);
     g_config.focus_history            = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:focus_history", "enable focus history", 1);
     g_config.auto_width_rules         = makeShared<Config::Values::CStringValue>("plugin:hyprscrolling:auto_width_rules", "per-class auto widths: class:0.7,class2:0.3", "");
+    g_config.click_edge_left          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:click_edge_left", "left edge exclusion for clicks in px", 90);
+    g_config.click_edge_right         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:click_edge_right", "right edge exclusion for clicks in px", 60);
 
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.fullscreen_on_one_column);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.column_width);
@@ -57,6 +59,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.collapsed_width);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.focus_history);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.auto_width_rules);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_config.click_edge_left);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_config.click_edge_right);
 
     bool success = HyprlandAPI::addTiledAlgo(PHANDLE, "hyprscrolling", &typeid(CScrollingLayout), []() -> UP<Layout::ITiledAlgorithm> {
         return makeUnique<CScrollingLayout>();
