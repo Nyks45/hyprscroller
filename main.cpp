@@ -41,6 +41,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_config.auto_width_rules         = makeShared<Config::Values::CStringValue>("plugin:hyprscrolling:auto_width_rules", "per-class auto widths: class:0.7,class2:0.3", "");
     g_config.click_edge_left          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:click_edge_left", "left edge exclusion for clicks in px", 90);
     g_config.click_edge_right         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:click_edge_right", "right edge exclusion for clicks in px", 60);
+    g_config.follow_hover             = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:follow_hover", "follow hover: 0=off 1=on with delay", 0);
+    g_config.hover_delay_ms           = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:hover_delay_ms", "hover delay in ms before scroll", 500);
 
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.fullscreen_on_one_column);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.column_width);
@@ -61,6 +63,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.auto_width_rules);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.click_edge_left);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.click_edge_right);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_config.follow_hover);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_config.hover_delay_ms);
 
     bool success = HyprlandAPI::addTiledAlgo(PHANDLE, "hyprscrolling", &typeid(CScrollingLayout), []() -> UP<Layout::ITiledAlgorithm> {
         return makeUnique<CScrollingLayout>();

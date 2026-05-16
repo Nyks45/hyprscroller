@@ -124,6 +124,10 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     CHyprSignalListener      m_configCallback;
     CHyprSignalListener      m_focusCallback;
     CHyprSignalListener      m_buttonCallback;
+    CHyprSignalListener      m_tickCallback;
+
+    CTimer                   m_hoverTimer;
+    WP<Layout::ITarget>      m_hoverTarget;
 
     struct {
         std::vector<float>                           configuredWidths;

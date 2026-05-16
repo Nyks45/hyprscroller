@@ -29,6 +29,8 @@ struct SConfig {
     SP<Config::Values::CStringValue> auto_width_rules;
     SP<Config::Values::CIntValue>    click_edge_left;
     SP<Config::Values::CIntValue>    click_edge_right;
+    SP<Config::Values::CIntValue>    follow_hover;
+    SP<Config::Values::CIntValue>    hover_delay_ms;
 };
 
 inline SConfig g_config;

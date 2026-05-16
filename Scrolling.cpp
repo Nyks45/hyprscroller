@@ -579,9 +579,24 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                 if (!g_config.follow_focus->value())
                     return;
 
-                if (reason == Desktop::FOCUS_REASON_FFM)
-                    return;
+                if (reason == Desktop::FOCUS_REASON_FFM) {
+                    if (!g_config.follow_hover->value())
+                        return;
 
+                    // check edge exclusion
+                    Vector2D cursor = g_pInputManager->getMouseCoordsInternal();
+                    auto PMONITOR = g_pCompositor->getMonitorFromCursor();
+                    if (PMONITOR) {
+                        const auto MON_BOX = PMONITOR->logicalBox();
+                        if (cursor.x < MON_BOX.x + (double)g_config.click_edge_left->value() ||
+                            cursor.x > MON_BOX.x + MON_BOX.w - (double)g_config.click_edge_right->value())
+                            return;
+                    }
+
+                    m_hoverTimer.reset();
+                    m_hoverTarget = t;
+                    return;
+                }
                 if (reason == Desktop::FOCUS_REASON_CLICK)
                     return;
 
@@ -673,6 +688,49 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                     break;
                 }
             }
+        });
+    }
+
+    if (!m_tickCallback) {
+        m_tickCallback = Event::bus()->m_events.tick.listen([this]() {
+            auto target = m_hoverTarget.lock();
+            if (!target || m_hoverTimer.getMillis() < (double)g_config.hover_delay_ms->value())
+                return;
+
+            // verify cursor is still over this window and not in exclusion zone
+            Vector2D cursor = g_pInputManager->getMouseCoordsInternal();
+            auto PMONITOR = g_pCompositor->getMonitorFromCursor();
+            if (!PMONITOR)
+                return;
+            const auto MON_BOX = PMONITOR->logicalBox();
+            if (cursor.x < MON_BOX.x + (double)g_config.click_edge_left->value() ||
+                cursor.x > MON_BOX.x + MON_BOX.w - (double)g_config.click_edge_right->value())
+                return;
+
+            auto PWIN = target->window();
+            if (!PWIN)
+                return;
+            CBox box = {PWIN->m_realPosition->value().x, PWIN->m_realPosition->value().y, PWIN->m_realSize->value().x, PWIN->m_realSize->value().y};
+            if (cursor.x < box.x || cursor.x > box.x + box.w || cursor.y < box.y || cursor.y > box.y + box.h)
+                return;
+
+            auto WDATA = dataFor(target);
+            if (!WDATA)
+                return;
+            auto COL = WDATA->column.lock();
+            if (!COL)
+                return;
+
+            if (g_config.focus_fit_method->value() == 1)
+                m_scrollingData->fitCol(COL);
+            else if (g_config.focus_fit_method->value() == 2)
+                m_scrollingData->fitCol2(COL);
+            else
+                m_scrollingData->centerCol(COL);
+            m_scrollingData->recalculate();
+
+            m_hoverTimer.reset();
+            m_hoverTarget.reset();
         });
     }
 
