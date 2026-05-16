@@ -582,6 +582,9 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                 if (reason == Desktop::FOCUS_REASON_FFM)
                     return;
 
+                if (reason == Desktop::FOCUS_REASON_CLICK)
+                    return;
+
                 float minVisible = g_config.follow_min_visible->value();
                 if (minVisible > 0.F) {
                     auto PMONITOR = ws->m_monitor.lock();
