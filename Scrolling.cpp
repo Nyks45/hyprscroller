@@ -206,7 +206,6 @@ void SScrollingLayoutData::centerCol(SP<SColumnData> c) {
     if (!c)
         return;
 
-
     const auto        USABLE      = layout->usableArea();
     double            currentLeft = 0;
 
@@ -226,7 +225,6 @@ void SScrollingLayoutData::fitCol(SP<SColumnData> c) {
     if (!c)
         return;
 
-
     const auto        USABLE      = layout->usableArea();
     double            currentLeft = 0;
 
@@ -242,13 +240,42 @@ void SScrollingLayoutData::fitCol(SP<SColumnData> c) {
     }
 }
 
+void SScrollingLayoutData::fitCol2(SP<SColumnData> c) {
+    if (!c)
+        return;
+
+    const auto        USABLE      = layout->usableArea();
+    double            currentLeft = 0;
+    double            maxExtent   = maxWidth();
+
+    for (const auto& COL : columns) {
+        const double ITEM_WIDTH = g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth;
+
+        if (COL != c)
+            currentLeft += ITEM_WIDTH;
+        else {
+            double idealOffset = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.F;
+
+            if (maxExtent < USABLE.w) {
+                leftOffset = (maxExtent - USABLE.w) / 2.0;
+            } else {
+                double lo = 0.0;
+                double hi = maxExtent - USABLE.w;
+                leftOffset = std::clamp(idealOffset, lo, std::max(lo, hi));
+            }
+            return;
+        }
+    }
+}
+
 void SScrollingLayoutData::centerOrFitCol(SP<SColumnData> c) {
     if (!c)
         return;
 
-
     if (g_config.focus_fit_method->value() == 1)
         fitCol(c);
+    else if (g_config.focus_fit_method->value() == 2)
+        fitCol2(c);
     else
         centerCol(c);
 }
@@ -531,9 +558,6 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
             if (!pWindow)
                 return;
 
-            if (!g_config.follow_focus->value())
-                return;
-
             auto parent = m_parent.lock();
             if (!parent || !parent->space())
                 return;
@@ -551,12 +575,36 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                 if (!WDATA)
                     break;
 
+                if (!g_config.follow_focus->value())
+                    return;
+
+                float minVisible = g_config.follow_min_visible->value();
+                if (minVisible > 0.F) {
+                    auto PMONITOR = ws->m_monitor.lock();
+                    if (PMONITOR) {
+                        const auto MON_BOX = PMONITOR->logicalBox();
+                        const auto WIN_BOX = WDATA->layoutBox;
+                        double visibleW = std::abs(
+                            std::min(MON_BOX.x + MON_BOX.w, WIN_BOX.x + WIN_BOX.w) -
+                            std::max(MON_BOX.x, WIN_BOX.x)
+                        );
+                        double visibleH = std::abs(
+                            std::min(MON_BOX.y + MON_BOX.h, WIN_BOX.y + WIN_BOX.h) -
+                            std::max(MON_BOX.y, WIN_BOX.y)
+                        );
+                        if (visibleW >= MON_BOX.w * minVisible && visibleH >= MON_BOX.h * minVisible)
+                            return;
+                    }
+                }
+
                 static CTimer     debounceTimer;
                 if (debounceTimer.getMillis() < g_config.follow_debounce_ms->value())
                     return;
 
                 if (g_config.focus_fit_method->value() == 1)
                     m_scrollingData->fitCol(WDATA->column.lock());
+                else if (g_config.focus_fit_method->value() == 2)
+                    m_scrollingData->fitCol2(WDATA->column.lock());
                 else
                     m_scrollingData->centerCol(WDATA->column.lock());
                 m_scrollingData->recalculate();
@@ -827,6 +875,8 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
     static auto centerOrFit = [](const SP<SScrollingLayoutData> WS, const SP<SColumnData> COL) -> void {
         if (g_config.focus_fit_method->value() == 1)
             WS->fitCol(COL);
+        else if (g_config.focus_fit_method->value() == 2)
+            WS->fitCol2(COL);
         else
             WS->centerCol(COL);
     };
@@ -1363,7 +1413,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         m_scrollingData->recalculate();
     } else if (ARGS[0] == "togglefit") {
         static int64_t    s_fitMethod = g_config.focus_fit_method->value();
-        const int         toggled    = s_fitMethod ^ 1;
+        const int         toggled    = (s_fitMethod + 1) % 3;
 
         s_fitMethod = toggled;
 

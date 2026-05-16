@@ -87,6 +87,7 @@ struct SScrollingLayoutData {
     bool                         visible(SP<SColumnData> c);
     void                         centerCol(SP<SColumnData> c);
     void                         fitCol(SP<SColumnData> c);
+    void                         fitCol2(SP<SColumnData> c);
     void                         centerOrFitCol(SP<SColumnData> c);
 
     void                         recalculate(bool forceInstant = false);
