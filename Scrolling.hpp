@@ -123,6 +123,7 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
 
     CHyprSignalListener      m_configCallback;
     CHyprSignalListener      m_focusCallback;
+    CHyprSignalListener      m_buttonCallback;
 
     struct {
         std::vector<float>                           configuredWidths;

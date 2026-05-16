@@ -11,6 +11,7 @@
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/devices/IPointer.hpp>
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
 #include <hyprland/src/layout/space/Space.hpp>
 #include <hyprland/src/layout/target/Target.hpp>
@@ -578,6 +579,9 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                 if (!g_config.follow_focus->value())
                     return;
 
+                if (reason == Desktop::FOCUS_REASON_FFM)
+                    return;
+
                 float minVisible = g_config.follow_min_visible->value();
                 if (minVisible > 0.F) {
                     auto PMONITOR = ws->m_monitor.lock();
@@ -610,6 +614,55 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                 m_scrollingData->recalculate();
                 debounceTimer.reset();
                 break;
+            }
+        });
+    }
+
+    if (!m_buttonCallback) {
+        m_buttonCallback = Event::bus()->m_events.input.mouse.button.listen([this](IPointer::SButtonEvent ev, Event::SCallbackInfo& info) {
+            if (ev.button != 272 || ev.state != WL_POINTER_BUTTON_STATE_PRESSED)
+                return;
+
+            auto parent = m_parent.lock();
+            if (!parent || !parent->space())
+                return;
+
+            auto ws = parent->space()->workspace();
+            if (!ws)
+                return;
+
+            Vector2D cursor = g_pInputManager->getMouseCoordsInternal();
+            auto PMONITOR = g_pCompositor->getMonitorFromCursor();
+            if (!PMONITOR)
+                return;
+
+            for (auto& wt : parent->space()->targets()) {
+                auto t = wt.lock();
+                if (!t || !t->window())
+                    continue;
+
+                auto PWIN = t->window();
+                CBox box = {PWIN->m_realPosition->value().x, PWIN->m_realPosition->value().y, PWIN->m_realSize->value().x, PWIN->m_realSize->value().y};
+                if (cursor.x >= box.x && cursor.x <= box.x + box.w &&
+                    cursor.y >= box.y && cursor.y <= box.y + box.h) {
+
+                    auto WDATA = dataFor(t);
+                    if (!WDATA)
+                        continue;
+
+                    auto COL = WDATA->column.lock();
+                    if (!COL)
+                        continue;
+
+                    if (g_config.focus_fit_method->value() == 1)
+                        m_scrollingData->fitCol(COL);
+                    else if (g_config.focus_fit_method->value() == 2)
+                        m_scrollingData->fitCol2(COL);
+                    else
+                        m_scrollingData->centerCol(COL);
+                    m_scrollingData->recalculate();
+                    break;
+                }
             }
         });
     }
