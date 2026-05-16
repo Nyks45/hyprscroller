@@ -679,12 +679,12 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
         m_scrollingData->remove(COL);
     }
 
-    m_scrollingData->recalculate();
-
-    // Ensure we don't leave extra space
+    // clamp before recalculate so windows don't get positioned with stale offset
     const auto USABLE = usableArea();
     m_scrollingData->leftOffset = std::clamp((double)m_scrollingData->leftOffset, 0.0,
         std::max(m_scrollingData->maxWidth() - USABLE.w, 0.0));
+
+    m_scrollingData->recalculate();
 }
 
 void CScrollingLayout::recalculate(Layout::eRecalculateReason reason) {
