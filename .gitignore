@@ -4,3 +4,4 @@ hyprscroller.so
 .cache/
 compile_commands.json
 result
+*.so
