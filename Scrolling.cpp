@@ -829,13 +829,13 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
         auto col = m_scrollingData->add();
         col->add(target);
         col->columnWidth = autoWidthForTarget(target);
-        m_scrollingData->fitCol(col);
+        m_scrollingData->centerOrFitCol(col);
     } else {
         auto idx = m_scrollingData->idx(droppingColumn);
         auto col = idx == -1 ? m_scrollingData->add() : m_scrollingData->add(idx);
         col->add(target);
         col->columnWidth = autoWidthForTarget(target);
-        m_scrollingData->fitCol(col);
+        m_scrollingData->centerOrFitCol(col);
     }
 
     m_scrollingData->recalculate();
@@ -854,6 +854,11 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
     auto COL = DATA->column.lock();
     if (!COL)
         return;
+
+    // Determine next focus before removal so we can pre-scroll to it.
+    // This ensures the focus callback's centerOrFitCol is a no-op and
+    // doesn't restart the layout animation mid-flight.
+    auto nextFocus = getNextCandidate(target);
 
     if (!m_scrollingData->next(COL)) {
         // move the view if this is the last column
@@ -874,6 +879,16 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
     const double SCROLL_W  = USABLE.w - m_scrollingData->pinnedWidthLeft() - m_scrollingData->pinnedWidthRight();
     m_scrollingData->leftOffset = std::clamp((double)m_scrollingData->leftOffset, 0.0,
         std::max(m_scrollingData->maxWidth() - SCROLL_W, 0.0));
+
+    // Pre-scroll to the next focus so the focus callback computes the same
+    // leftOffset and skips its recalculate — one animation instead of two.
+    if (nextFocus) {
+        auto NDATA = dataFor(nextFocus);
+        if (NDATA) {
+            if (auto ncol = NDATA->column.lock())
+                m_scrollingData->centerOrFitCol(ncol);
+        }
+    }
 
     m_scrollingData->recalculate();
 }
