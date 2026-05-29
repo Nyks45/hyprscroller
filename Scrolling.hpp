@@ -72,10 +72,6 @@ struct SScrollingLayoutData {
 
         std::vector<SP<SColumnData>> columns;
         float                        leftOffset                  = 0;
-        double                       leftOffsetAnimationTarget   = 0;
-        double                       leftOffsetAnimStart         = 0;
-        CTimer                       leftOffsetAnimTimer;
-        bool                         leftOffsetIsAnimating       = false;
 
     SP<SColumnData>              add();
     SP<SColumnData>              add(int after);
