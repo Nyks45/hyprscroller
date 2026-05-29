@@ -56,14 +56,24 @@ All options go inside `plugin { hyprscrolling { ... } }` in your Hyprland config
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `column_width` | float (0–1) | `0.5` | Default column width as a fraction of monitor width |
+| `window_default_height` | float (0–1) | `1.0` | Default height for new windows in a column (1.0 = equal split) |
 | `fullscreen_on_one_column` | bool | `false` | If there's only one column, make it fullscreen |
-| `focus_fit_method` | int (0 or 1) | `0` | When focusing a column: `0` = center it, `1` = fit it into view |
-| `follow_focus` | bool | `true` | Automatically scroll to keep the focused column visible |
+| `focus_fit_method` | int | `0` | Column scroll behaviour on focus: `0` = center, `1` = fit into view, `2` = gap-free center |
+| `follow_focus` | int | `1` | `0` = off, `1` = scroll on keyboard/programmatic focus, `2` = scroll on all focus including mouse hover (immediately, no timer) |
+| `follow_min_visible` | float (0–1) | `0.0` | Minimum visible fraction of a window before scrolling (0 = always scroll) |
 | `follow_debounce_ms` | int | `0` | Debounce time (ms) for follow_focus events |
-| `explicit_column_widths` | string | `0.333, 0.5, 0.667, 1.0` | Comma-separated preset widths for `+conf` / `-conf` cycling |
+| `follow_hover` | bool | `false` | Scroll to a window when the cursor hovers over it (uses `hover_delay_ms`) |
+| `hover_delay_ms` | int | `500` | Delay in ms before a hover triggers scrolling |
+| `focus_wrap` | bool | `true` | Wrap focus at column/window edges |
+| `center_active_column` | bool | `false` | Always scroll to center the focused column after every focus change |
+| `explicit_column_widths` | string | `0.333,0.5,0.667,1.0` | Comma-separated preset widths for `colresize +conf` / `-conf` cycling |
+| `column_widths` | string | `0.333,0.5,0.667,1.0` | Alias for `explicit_column_widths` |
+| `window_heights` | string | `0.333,0.5,0.667,1.0` | Comma-separated preset heights for `rowresize +conf` / `-conf` cycling |
 | `collapsed_width` | int (px) | `30` | Width of a collapsed column in pixels |
 | `focus_history` | bool | `true` | Enable focus history for `focusback` / `focusfwd` |
-| `auto_width_rules` | string | `` | Per-class automatic width: `firefox:0.7, kitty:0.3` |
+| `auto_width_rules` | string | `` | Per-class automatic column width: `firefox:0.7, kitty:0.3` |
+| `click_edge_left` | int (px) | `90` | Cursor x distance from left monitor edge that suppresses click-to-scroll |
+| `click_edge_right` | int (px) | `60` | Cursor x distance from right monitor edge that suppresses click-to-scroll |
 
 ### Example
 
@@ -113,7 +123,8 @@ bind = SUPER, key, layoutmsg, <message>
 | Message | Params | Description |
 |---|---|---|
 | `swapcol l/r` | `l` or `r` | Swap current column with its left/right neighbor. Wraps around |
-| `colresize` | `0.5`, `+0.2`, `-0.2`, `+conf`, `-conf`, `all 0.5` | Resize current column (or all columns) |
+| `colresize` | `0.5`, `+0.2`, `-0.2`, `+conf`, `-conf`, `all 0.5` | Resize current column width (or all columns). `+conf`/`-conf` cycles through `explicit_column_widths` |
+| `rowresize` | `0.5`, `+0.1`, `-0.1`, `+conf`, `-conf` | Resize current window height within its column. `+conf`/`-conf` cycles through `window_heights` |
 | `movecoltoworkspace` | `1`, `+1`, `-1`, `special`, etc. | Move entire current column to a workspace |
 | `togglecollapse` | — | Fold / expand the current column |
 
@@ -128,7 +139,7 @@ bind = SUPER, key, layoutmsg, <message>
 | Message | Params | Description |
 |---|---|---|
 | `fit` | `active`, `visible`, `all`, `toend`, `tobeg` | Resize/arrange columns to fit the screen |
-| `togglefit` | — | Toggle `focus_fit_method` between center (0) and fit (1) |
+| `togglefit` | — | Cycle `focus_fit_method` through center (0) → fit (1) → gap-free center (2) → center … |
 
 ### View Modes
 

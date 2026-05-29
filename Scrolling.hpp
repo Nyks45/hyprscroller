@@ -127,10 +127,13 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     CHyprSignalListener      m_tickCallback;
 
     CTimer                   m_hoverTimer;
+    CTimer                   m_debounceTimer;
     WP<Layout::ITarget>      m_hoverTarget;
+    int                      m_fitMethodOverride = -1;
 
     struct {
         std::vector<float>                           configuredWidths;
+        std::vector<float>                           configuredHeights;
         std::unordered_map<std::string, float>        autoWidthRules;
     } m_config;
 
@@ -153,6 +156,8 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     float                    autoWidthForTarget(SP<Layout::ITarget> target);
 
     float                    defaultColumnWidth();
+    int                      effectiveFitMethod() const;
+    void                     parseConfig();
 
     friend struct SScrollingLayoutData;
 };

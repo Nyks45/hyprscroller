@@ -32,19 +32,27 @@ constexpr float MAX_ROW_HEIGHT   = 1.F;
 
 //
 void SColumnData::add(SP<Layout::ITarget> t) {
-    for (auto& wd : windowDatas) {
-        wd->windowSize *= (float)windowDatas.size() / (float)(windowDatas.size() + 1);
-    }
+    const size_t n       = windowDatas.size();
+    const float  pref    = std::clamp((float)g_config.window_default_height->value(), MIN_ROW_HEIGHT, 1.0f);
+    const float  newSize = (n == 0 || pref >= 1.0f) ? 1.0f / (float)(n + 1) : pref;
+    const float  scale   = (n == 0 || pref >= 1.0f) ? (float)n / (float)(n + 1) : (1.0f - pref);
 
-    windowDatas.emplace_back(makeShared<SScrollingWindowData>(t, self.lock(), 1.F / (float)(windowDatas.size() + 1)));
+    for (auto& wd : windowDatas)
+        wd->windowSize *= scale;
+
+    windowDatas.emplace_back(makeShared<SScrollingWindowData>(t, self.lock(), newSize));
 }
 
 void SColumnData::add(SP<Layout::ITarget> t, int after) {
-    for (auto& wd : windowDatas) {
-        wd->windowSize *= (float)windowDatas.size() / (float)(windowDatas.size() + 1);
-    }
+    const size_t n       = windowDatas.size();
+    const float  pref    = std::clamp((float)g_config.window_default_height->value(), MIN_ROW_HEIGHT, 1.0f);
+    const float  newSize = (n == 0 || pref >= 1.0f) ? 1.0f / (float)(n + 1) : pref;
+    const float  scale   = (n == 0 || pref >= 1.0f) ? (float)n / (float)(n + 1) : (1.0f - pref);
 
-    windowDatas.insert(windowDatas.begin() + after + 1, makeShared<SScrollingWindowData>(t, self.lock(), 1.F / (float)(windowDatas.size() + 1)));
+    for (auto& wd : windowDatas)
+        wd->windowSize *= scale;
+
+    windowDatas.insert(windowDatas.begin() + after + 1, makeShared<SScrollingWindowData>(t, self.lock(), newSize));
 }
 
 void SColumnData::add(SP<SScrollingWindowData> w) {
@@ -72,7 +80,7 @@ size_t SColumnData::idx(SP<Layout::ITarget> t) {
         if (windowDatas[i]->target.lock() == t)
             return i;
     }
-    return 0;
+    return SIZE_MAX;
 }
 
 size_t SColumnData::idxForHeight(float y) {
@@ -207,16 +215,18 @@ void SScrollingLayoutData::centerCol(SP<SColumnData> c) {
     if (!c)
         return;
 
-    const auto        USABLE      = layout->usableArea();
-    double            currentLeft = 0;
+    const auto   USABLE       = layout->usableArea();
+    const double COLLAPSED_PX = g_config.collapsed_width->value();
+    double       currentLeft  = 0;
 
     for (const auto& COL : columns) {
-        const double ITEM_WIDTH = g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth;
+        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX :
+            (g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth);
 
         if (COL != c)
             currentLeft += ITEM_WIDTH;
         else {
-            leftOffset = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.F;
+            leftOffset = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.0;
             return;
         }
     }
@@ -226,11 +236,13 @@ void SScrollingLayoutData::fitCol(SP<SColumnData> c) {
     if (!c)
         return;
 
-    const auto        USABLE      = layout->usableArea();
-    double            currentLeft = 0;
+    const auto   USABLE       = layout->usableArea();
+    const double COLLAPSED_PX = g_config.collapsed_width->value();
+    double       currentLeft  = 0;
 
     for (const auto& COL : columns) {
-        const double ITEM_WIDTH = g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth;
+        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX :
+            (g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth);
 
         if (COL != c)
             currentLeft += ITEM_WIDTH;
@@ -245,17 +257,19 @@ void SScrollingLayoutData::fitCol2(SP<SColumnData> c) {
     if (!c)
         return;
 
-    const auto        USABLE      = layout->usableArea();
-    double            currentLeft = 0;
-    double            maxExtent   = maxWidth();
+    const auto   USABLE       = layout->usableArea();
+    const double COLLAPSED_PX = g_config.collapsed_width->value();
+    double       currentLeft  = 0;
+    double       maxExtent    = maxWidth();
 
     for (const auto& COL : columns) {
-        const double ITEM_WIDTH = g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth;
+        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX :
+            (g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth);
 
         if (COL != c)
             currentLeft += ITEM_WIDTH;
         else {
-            double idealOffset = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.F;
+            double idealOffset = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.0;
 
             if (maxExtent < USABLE.w) {
                 leftOffset = (maxExtent - USABLE.w) / 2.0;
@@ -273,25 +287,31 @@ void SScrollingLayoutData::centerOrFitCol(SP<SColumnData> c) {
     if (!c)
         return;
 
-    if (g_config.focus_fit_method->value() == 1)
+    const int method = layout->effectiveFitMethod();
+    if (method == 1)
         fitCol(c);
-    else if (g_config.focus_fit_method->value() == 2)
+    else if (method == 2)
         fitCol2(c);
     else
         centerCol(c);
 }
 
 SP<SColumnData> SScrollingLayoutData::atCenter() {
-
-    double            currentLeft = leftOffset;
-    const auto        USABLE      = layout->usableArea();
+    double       currentLeft  = 0;
+    const auto   USABLE       = layout->usableArea();
+    const double COLLAPSED_PX = g_config.collapsed_width->value();
+    const double threshold    = leftOffset + USABLE.w / 2.0 - 2;
 
     for (const auto& COL : columns) {
-        const double ITEM_WIDTH = g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth;
+        if (COL->pinned != PIN_NONE)
+            continue;
+
+        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX :
+            (g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth);
 
         currentLeft += ITEM_WIDTH;
 
-        if (currentLeft >= USABLE.w / 2.0 - 2)
+        if (currentLeft >= threshold)
             return COL;
     }
 
@@ -450,57 +470,73 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
         }
 
         currentLeft += ITEM_WIDTH;
-        if (currentLeft == SCROLL_W)
+        if (currentLeft >= SCROLL_W)
             currentLeft++;
     }
 }
 
 double SScrollingLayoutData::maxWidth() {
-
-    double            currentLeft = 0;
-    const auto        USABLE      = layout->usableArea();
+    double            currentLeft  = 0;
+    const auto        USABLE       = layout->usableArea();
+    const double      COLLAPSED_PX = g_config.collapsed_width->value();
 
     for (const auto& COL : columns) {
-        const double ITEM_WIDTH = g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth;
-        currentLeft += ITEM_WIDTH;
+        if (COL->pinned != PIN_NONE)
+            continue;
+        if (COL->collapsed) {
+            currentLeft += COLLAPSED_PX;
+        } else {
+            currentLeft += g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth;
+        }
     }
 
     return currentLeft;
 }
 
 double SScrollingLayoutData::pinnedWidthLeft() {
-    const auto USABLE = layout->usableArea();
-    double     w      = 0;
+    const auto   USABLE       = layout->usableArea();
+    const double COLLAPSED_PX = g_config.collapsed_width->value();
+    double       w            = 0;
     for (const auto& COL : columns) {
         if (COL->pinned == PIN_LEFT)
-            w += USABLE.w * COL->columnWidth;
+            w += COL->collapsed ? COLLAPSED_PX : USABLE.w * COL->columnWidth;
     }
     return w;
 }
 
 double SScrollingLayoutData::pinnedWidthRight() {
-    const auto USABLE = layout->usableArea();
-    double     w      = 0;
+    const auto   USABLE       = layout->usableArea();
+    const double COLLAPSED_PX = g_config.collapsed_width->value();
+    double       w            = 0;
     for (const auto& COL : columns) {
         if (COL->pinned == PIN_RIGHT)
-            w += USABLE.w * COL->columnWidth;
+            w += COL->collapsed ? COLLAPSED_PX : USABLE.w * COL->columnWidth;
     }
     return w;
 }
 
 bool SScrollingLayoutData::visible(SP<SColumnData> c) {
-    const auto USABLE    = layout->usableArea();
-    float      totalLeft = 0;
-    for (const auto& col : columns) {
-        if (col == c) {
-            const float colLeft   = totalLeft;
-            const float colRight  = totalLeft + col->columnWidth * USABLE.w;
-            const float viewLeft  = leftOffset;
-            const float viewRight = leftOffset + USABLE.w;
-            return colLeft < viewRight && viewLeft < colRight;
-        }
+    if (!c)
+        return false;
 
-        totalLeft += col->columnWidth * USABLE.w;
+    if (c->pinned != PIN_NONE)
+        return true;
+
+    const auto   USABLE       = layout->usableArea();
+    const double COLLAPSED_PX = g_config.collapsed_width->value();
+    const double SCROLL_W     = USABLE.w - pinnedWidthLeft() - pinnedWidthRight();
+    double       totalLeft    = 0;
+
+    for (const auto& col : columns) {
+        if (col->pinned != PIN_NONE)
+            continue;
+
+        const double colWidth = col->collapsed ? COLLAPSED_PX : col->columnWidth * USABLE.w;
+
+        if (col == c)
+            return totalLeft < leftOffset + SCROLL_W && leftOffset < totalLeft + colWidth;
+
+        totalLeft += colWidth;
     }
 
     return false;
@@ -518,6 +554,8 @@ CScrollingLayout::CScrollingLayout() {
 CScrollingLayout::~CScrollingLayout() {
     m_configCallback.reset();
     m_focusCallback.reset();
+    m_buttonCallback.reset();
+    m_tickCallback.reset();
 }
 
 float CScrollingLayout::defaultColumnWidth() {
@@ -548,10 +586,9 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
     if (!target)
         return;
 
-    // Initialize config on first use (hardcoded defaults)
     if (!m_configCallback) {
-        m_config.configuredWidths = {0.333, 0.5, 0.667, 0.85, 1.0};
-        m_configCallback = Event::bus()->m_events.config.reloaded.listen([this]() {});
+        parseConfig();
+        m_configCallback = Event::bus()->m_events.config.reloaded.listen([this]() { parseConfig(); });
     }
 
     if (!m_focusCallback) {
@@ -580,10 +617,7 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                     return;
 
                 if (reason == Desktop::FOCUS_REASON_FFM) {
-                    if (!g_config.follow_hover->value())
-                        return;
-
-                    // check edge exclusion
+                    // Always check edge exclusion for hover/always-follow
                     Vector2D cursor = g_pInputManager->getMouseCoordsInternal();
                     auto PMONITOR = g_pCompositor->getMonitorFromCursor();
                     if (PMONITOR) {
@@ -593,9 +627,15 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                             return;
                     }
 
-                    m_hoverTimer.reset();
-                    m_hoverTarget = t;
-                    return;
+                    if (g_config.follow_focus->value() == 2) {
+                        // follow_focus=2: immediate scroll on hover, fall through to scroll logic
+                    } else {
+                        if (!g_config.follow_hover->value())
+                            return;
+                        m_hoverTimer.reset();
+                        m_hoverTarget = t;
+                        return;
+                    }
                 }
                 if (reason == Desktop::FOCUS_REASON_CLICK)
                     return;
@@ -606,11 +646,11 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                     if (PMONITOR) {
                         const auto MON_BOX = PMONITOR->logicalBox();
                         const auto WIN_BOX = WDATA->layoutBox;
-                        double visibleW = std::abs(
+                        double visibleW = std::max(0.0,
                             std::min(MON_BOX.x + MON_BOX.w, WIN_BOX.x + WIN_BOX.w) -
                             std::max(MON_BOX.x, WIN_BOX.x)
                         );
-                        double visibleH = std::abs(
+                        double visibleH = std::max(0.0,
                             std::min(MON_BOX.y + MON_BOX.h, WIN_BOX.y + WIN_BOX.h) -
                             std::max(MON_BOX.y, WIN_BOX.y)
                         );
@@ -619,18 +659,12 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                     }
                 }
 
-                static CTimer     debounceTimer;
-                if (debounceTimer.getMillis() < g_config.follow_debounce_ms->value())
+                if (m_debounceTimer.getMillis() < g_config.follow_debounce_ms->value())
                     return;
 
-                if (g_config.focus_fit_method->value() == 1)
-                    m_scrollingData->fitCol(WDATA->column.lock());
-                else if (g_config.focus_fit_method->value() == 2)
-                    m_scrollingData->fitCol2(WDATA->column.lock());
-                else
-                    m_scrollingData->centerCol(WDATA->column.lock());
+                m_scrollingData->centerOrFitCol(WDATA->column.lock());
                 m_scrollingData->recalculate();
-                debounceTimer.reset();
+                m_debounceTimer.reset();
                 break;
             }
         });
@@ -678,12 +712,7 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                     if (!COL)
                         continue;
 
-                    if (g_config.focus_fit_method->value() == 1)
-                        m_scrollingData->fitCol(COL);
-                    else if (g_config.focus_fit_method->value() == 2)
-                        m_scrollingData->fitCol2(COL);
-                    else
-                        m_scrollingData->centerCol(COL);
+                    m_scrollingData->centerOrFitCol(COL);
                     m_scrollingData->recalculate();
                     break;
                 }
@@ -721,12 +750,7 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
             if (!COL)
                 return;
 
-            if (g_config.focus_fit_method->value() == 1)
-                m_scrollingData->fitCol(COL);
-            else if (g_config.focus_fit_method->value() == 2)
-                m_scrollingData->fitCol2(COL);
-            else
-                m_scrollingData->centerCol(COL);
+            m_scrollingData->centerOrFitCol(COL);
             m_scrollingData->recalculate();
 
             m_hoverTimer.reset();
@@ -800,9 +824,10 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
     }
 
     // clamp before recalculate so windows don't get positioned with stale offset
-    const auto USABLE = usableArea();
+    const auto   USABLE    = usableArea();
+    const double SCROLL_W  = USABLE.w - m_scrollingData->pinnedWidthLeft() - m_scrollingData->pinnedWidthRight();
     m_scrollingData->leftOffset = std::clamp((double)m_scrollingData->leftOffset, 0.0,
-        std::max(m_scrollingData->maxWidth() - USABLE.w, 0.0));
+        std::max(m_scrollingData->maxWidth() - SCROLL_W, 0.0));
 
     m_scrollingData->recalculate();
 }
@@ -950,8 +975,13 @@ void CScrollingLayout::focusTargetUpdate(SP<Layout::ITarget> target) {
 
     const auto WDATA = dataFor(target);
     if (WDATA) {
-        if (auto col = WDATA->column.lock())
+        if (auto col = WDATA->column.lock()) {
             col->lastFocusedWindow = WDATA;
+            if (g_config.center_active_column->value()) {
+                m_scrollingData->centerOrFitCol(col);
+                m_scrollingData->recalculate();
+            }
+        }
     }
 
     pushFocusHistory(target);
@@ -992,13 +1022,8 @@ SP<SScrollingWindowData> CScrollingLayout::findBestNeighbor(SP<SScrollingWindowD
 Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
     const std::string message{sv};
 
-    static auto centerOrFit = [](const SP<SScrollingLayoutData> WS, const SP<SColumnData> COL) -> void {
-        if (g_config.focus_fit_method->value() == 1)
-            WS->fitCol(COL);
-        else if (g_config.focus_fit_method->value() == 2)
-            WS->fitCol2(COL);
-        else
-            WS->centerCol(COL);
+    auto centerOrFit = [this](const SP<SScrollingLayoutData> WS, const SP<SColumnData> COL) -> void {
+        WS->centerOrFitCol(COL);
     };
 
     const auto ARGS = CVarList(message, 0, ' ');
@@ -1056,7 +1081,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
 
             if (!WDATA) {
                 if (m_scrollingData->columns.size() > 0) {
-                    m_scrollingData->centerCol(m_scrollingData->columns.back());
+                    m_scrollingData->centerOrFitCol(m_scrollingData->columns.back());
                     m_scrollingData->recalculate();
                     auto target = m_scrollingData->columns.back()->windowDatas.back()->target.lock();
                     focusTargetUpdate(target);
@@ -1119,6 +1144,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 abs = std::stof(ARGS[2]);
             } catch (...) { return {}; }
 
+            abs = std::clamp(abs, MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
             for (const auto& c : m_scrollingData->columns) {
                 c->columnWidth = abs;
             }
@@ -1177,7 +1203,96 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
 
             COL->columnWidth = abs;
         }
+    } else if (ARGS[0] == "rowresize") {
+        if (ARGS[1].empty())
+            return {};
+
+        auto focusedWindow = Desktop::focusState()->window();
+        if (!focusedWindow)
+            return {};
+
+        SP<SScrollingWindowData> WDATA = nullptr;
+        auto                     parent = m_parent.lock();
+        if (parent && parent->space()) {
+            for (auto& wt : parent->space()->targets()) {
+                auto t = wt.lock();
+                if (t && t->window() == focusedWindow) {
+                    WDATA = dataFor(t);
+                    break;
+                }
+            }
+        }
+
+        if (!WDATA)
+            return {};
+
+        auto COL = WDATA->column.lock();
+        if (!COL)
+            return {};
+
+        if (COL->windowDatas.size() <= 1)
+            return {};
+
+        // Resize the window to targetSize, scaling all other windows in the column proportionally.
+        auto applyRowSize = [&](float targetSize) {
+            targetSize = std::clamp(targetSize, MIN_ROW_HEIGHT, MAX_ROW_HEIGHT);
+            if (COL->windowDatas.size() > 1) {
+                const float currentOthers = 1.0f - WDATA->windowSize;
+                const float newOthers     = 1.0f - targetSize;
+                if (currentOthers > 0.0f) {
+                    const float scale = newOthers / currentOthers;
+                    for (auto& wd : COL->windowDatas) {
+                        if (wd != WDATA)
+                            wd->windowSize = std::clamp(wd->windowSize * scale, MIN_ROW_HEIGHT, MAX_ROW_HEIGHT);
+                    }
+                } else {
+                    const float equalShare = newOthers / (float)(COL->windowDatas.size() - 1);
+                    for (auto& wd : COL->windowDatas) {
+                        if (wd != WDATA)
+                            wd->windowSize = std::clamp(equalShare, MIN_ROW_HEIGHT, MAX_ROW_HEIGHT);
+                    }
+                }
+            }
+            WDATA->windowSize = targetSize;
+            m_scrollingData->recalculate(true);
+        };
+
+        if (ARGS[1] == "+conf") {
+            for (size_t i = 0; i < m_config.configuredHeights.size(); ++i) {
+                if (m_config.configuredHeights[i] > WDATA->windowSize) {
+                    applyRowSize(m_config.configuredHeights[i]);
+                    return {};
+                }
+                if (i == m_config.configuredHeights.size() - 1)
+                    applyRowSize(m_config.configuredHeights[0]);
+            }
+        } else if (ARGS[1] == "-conf") {
+            for (size_t i = m_config.configuredHeights.size() - 1;; --i) {
+                if (m_config.configuredHeights[i] < WDATA->windowSize) {
+                    applyRowSize(m_config.configuredHeights[i]);
+                    break;
+                }
+                if (i == 0) {
+                    applyRowSize(m_config.configuredHeights.back());
+                    break;
+                }
+            }
+        } else if (ARGS[1][0] == '+' || ARGS[1][0] == '-') {
+            const auto PLUSMINUS = getPlusMinusKeywordResult(ARGS[1], 0);
+            if (!PLUSMINUS.has_value())
+                return {};
+            applyRowSize(WDATA->windowSize + (float)*PLUSMINUS);
+        } else {
+            float abs = 0;
+            try {
+                abs = std::stof(ARGS[1]);
+            } catch (...) { return {}; }
+            applyRowSize(abs);
+        }
     } else if (ARGS[0] == "movewindowto") {
+        if (ARGS[1].empty())
+            return {};
+
         auto focusedWindow = Desktop::focusState()->window();
         if (!focusedWindow)
             return {};
@@ -1210,31 +1325,51 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             }
         }
 
+        // Helper: sum scrollable width of columns[0..i-1], skipping pinned, accounting for collapsed.
+        const auto scrollableOffsetBefore = [&](size_t count) -> double {
+            const auto   USABLE       = usableArea();
+            const double COLLAPSED_PX = g_config.collapsed_width->value();
+            double       off          = 0;
+            for (size_t j = 0; j < count; ++j) {
+                const auto& col = m_scrollingData->columns[j];
+                if (col->pinned != PIN_NONE)
+                    continue;
+                off += col->collapsed ? COLLAPSED_PX : USABLE.w * col->columnWidth;
+            }
+            return off;
+        };
+
         if (ARGS[1] == "active") {
             if (!WDATA || m_scrollingData->columns.size() == 0)
                 return {};
 
-            const auto USABLE = usableArea();
-
             WDATA->column.lock()->columnWidth = 1.F;
 
-            m_scrollingData->leftOffset = 0;
-            auto target = WDATA->target.lock();
+            size_t activeIdx = 0;
+            auto   target    = WDATA->target.lock();
             for (size_t i = 0; i < m_scrollingData->columns.size(); ++i) {
-                if (m_scrollingData->columns[i]->has(target))
+                if (m_scrollingData->columns[i]->has(target)) {
+                    activeIdx = i;
                     break;
-
-                m_scrollingData->leftOffset += USABLE.w * m_scrollingData->columns[i]->columnWidth;
+                }
             }
-
+            m_scrollingData->leftOffset = scrollableOffsetBefore(activeIdx);
             m_scrollingData->recalculate();
         } else if (ARGS[1] == "all") {
             if (m_scrollingData->columns.size() == 0)
                 return {};
 
-            const size_t LEN = m_scrollingData->columns.size();
+            size_t LEN = 0;
             for (const auto& c : m_scrollingData->columns) {
-                c->columnWidth = 1.F / (float)LEN;
+                if (c->pinned == PIN_NONE)
+                    LEN++;
+            }
+            if (LEN == 0)
+                return {};
+
+            for (const auto& c : m_scrollingData->columns) {
+                if (c->pinned == PIN_NONE)
+                    c->columnWidth = 1.F / (float)LEN;
             }
 
             m_scrollingData->recalculate();
@@ -1257,19 +1392,20 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                     foundAt = i;
                 }
 
-                m_scrollingData->columns[i]->columnWidth = 1.F / (float)(m_scrollingData->columns.size() - i);
+                if (m_scrollingData->columns[i]->pinned == PIN_NONE) {
+                    size_t remaining = 0;
+                    for (size_t j = i; j < m_scrollingData->columns.size(); ++j) {
+                        if (m_scrollingData->columns[j]->pinned == PIN_NONE)
+                            remaining++;
+                    }
+                    m_scrollingData->columns[i]->columnWidth = remaining > 0 ? 1.F / (float)remaining : 1.F;
+                }
             }
 
             if (!begun)
                 return {};
 
-            const auto USABLE = usableArea();
-
-            m_scrollingData->leftOffset = 0;
-            for (size_t i = 0; i < foundAt; ++i) {
-                m_scrollingData->leftOffset += USABLE.w * m_scrollingData->columns[i]->columnWidth;
-            }
-
+            m_scrollingData->leftOffset = scrollableOffsetBefore(foundAt);
             m_scrollingData->recalculate();
         } else if (ARGS[1] == "tobeg") {
             if (m_scrollingData->columns.size() == 0)
@@ -1290,14 +1426,20 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                     foundAt = i;
                 }
 
-                m_scrollingData->columns[i]->columnWidth = 1.F / (float)(foundAt + 1);
+                if (m_scrollingData->columns[i]->pinned == PIN_NONE) {
+                    size_t scrollableInRange = 0;
+                    for (size_t j = 0; j <= (size_t)foundAt; ++j) {
+                        if (m_scrollingData->columns[j]->pinned == PIN_NONE)
+                            scrollableInRange++;
+                    }
+                    m_scrollingData->columns[i]->columnWidth = scrollableInRange > 0 ? 1.F / (float)scrollableInRange : 1.F;
+                }
             }
 
             if (!begun)
                 return {};
 
             m_scrollingData->leftOffset = 0;
-
             m_scrollingData->recalculate();
         } else if (ARGS[1] == "visible") {
             if (m_scrollingData->columns.size() == 0)
@@ -1324,15 +1466,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             if (!begun)
                 return {};
 
-            m_scrollingData->leftOffset = 0;
-
-            if (foundAt != 0) {
-                const auto USABLE = usableArea();
-
-                for (size_t i = 0; i < foundAt; ++i) {
-                    m_scrollingData->leftOffset += USABLE.w * m_scrollingData->columns[i]->columnWidth;
-                }
-            }
+            m_scrollingData->leftOffset = scrollableOffsetBefore(foundAt);
 
             for (const auto& v : visible) {
                 v->columnWidth = 1.F / (float)visible.size();
@@ -1366,10 +1500,9 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             case 't': {
                 auto PREV = WDATA->column.lock()->prev(WDATA);
                 if (!PREV) {
-                    if (0)
+                    if (!g_config.focus_wrap->value())
                         break;
-                    else
-                        PREV = WDATA->column.lock()->windowDatas.back();
+                    PREV = WDATA->column.lock()->windowDatas.back();
                 }
 
                 focusTargetUpdate(PREV->target.lock());
@@ -1383,10 +1516,9 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             case 'd': {
                 auto NEXT = WDATA->column.lock()->next(WDATA);
                 if (!NEXT) {
-                    if (0)
+                    if (!g_config.focus_wrap->value())
                         break;
-                    else
-                        NEXT = WDATA->column.lock()->windowDatas.front();
+                    NEXT = WDATA->column.lock()->windowDatas.front();
                 }
 
                 focusTargetUpdate(NEXT->target.lock());
@@ -1400,15 +1532,15 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 auto COL  = WDATA->column.lock();
                 auto PREV = m_scrollingData->prev(COL);
                 if (!PREV) {
-                    if (0) {
+                    if (!g_config.focus_wrap->value()) {
                         centerOrFit(m_scrollingData, COL);
                         m_scrollingData->recalculate();
                         auto w = WDATA->target.lock() ? WDATA->target.lock()->window() : nullptr;
                         if (w)
                             g_pCompositor->warpCursorTo(w->middle());
                         break;
-                    } else
-                        PREV = m_scrollingData->columns.back();
+                    }
+                    PREV = m_scrollingData->columns.back();
                 }
 
                 auto pTargetWindowData = findBestNeighbor(WDATA, PREV);
@@ -1427,15 +1559,15 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 auto COL  = WDATA->column.lock();
                 auto NEXT = m_scrollingData->next(COL);
                 if (!NEXT) {
-                    if (0) {
+                    if (!g_config.focus_wrap->value()) {
                         centerOrFit(m_scrollingData, COL);
                         m_scrollingData->recalculate();
                         auto w = WDATA->target.lock() ? WDATA->target.lock()->window() : nullptr;
                         if (w)
                             g_pCompositor->warpCursorTo(w->middle());
                         break;
-                    } else
-                        NEXT = m_scrollingData->columns.front();
+                    }
+                    NEXT = m_scrollingData->columns.front();
                 }
 
                 auto pTargetWindowData = findBestNeighbor(WDATA, NEXT);
@@ -1532,15 +1664,14 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         m_scrollingData->centerOrFitCol(CURRENT_COL);
         m_scrollingData->recalculate();
     } else if (ARGS[0] == "togglefit") {
-        static int64_t    s_fitMethod = g_config.focus_fit_method->value();
-        const int         toggled    = (s_fitMethod + 1) % 3;
+        m_fitMethodOverride = (effectiveFitMethod() + 1) % 3;
 
-        s_fitMethod = toggled;
+        if (m_scrollingData->columns.empty())
+            return {};
 
         auto focusedWindow = Desktop::focusState()->window();
-
         SP<SScrollingWindowData> focusedData = nullptr;
-        auto                     parent = m_parent.lock();
+        auto parent = m_parent.lock();
         if (parent && parent->space() && focusedWindow) {
             for (auto& wt : parent->space()->targets()) {
                 auto t = wt.lock();
@@ -1551,48 +1682,11 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             }
         }
 
-
-        if (m_scrollingData->columns.empty())
+        const auto columnToUse = (focusedData && focusedData->column.lock()) ? focusedData->column.lock() : m_scrollingData->atCenter();
+        if (!columnToUse)
             return {};
 
-        const auto USABLE = usableArea();
-
-        const auto focusedColumn = (focusedData && focusedData->column.lock()) ? focusedData->column.lock() : nullptr;
-        const auto fallbackColumn = m_scrollingData->atCenter();
-
-        if (toggled == 1) {
-            const auto columnToFit = focusedColumn ? focusedColumn : fallbackColumn;
-            if (!columnToFit)
-                return {};
-
-            double currentLeft = 0.0;
-            for (const auto& col : m_scrollingData->columns) {
-                const double itemWidth = g_config.fullscreen_on_one_column->value() && m_scrollingData->columns.size() == 1 ? USABLE.w : USABLE.w * col->columnWidth;
-
-                if (col == columnToFit) {
-                    const double colRight  = currentLeft + itemWidth;
-                    const double scrollMax = std::max(m_scrollingData->maxWidth() - USABLE.w, 0.0);
-                    double       desiredOffset;
-
-                    if (col == m_scrollingData->columns.front())
-                        desiredOffset = 0.0;
-                    else
-                        desiredOffset = std::clamp(colRight - USABLE.w, 0.0, scrollMax);
-
-                    m_scrollingData->leftOffset = desiredOffset;
-                    break;
-                }
-
-                currentLeft += itemWidth;
-            }
-        } else {
-            const auto columnToCenter = focusedColumn ? focusedColumn : fallbackColumn;
-            if (!columnToCenter)
-                return {};
-
-            m_scrollingData->centerCol(columnToCenter);
-        }
-
+        m_scrollingData->centerOrFitCol(columnToUse);
         m_scrollingData->recalculate();
     } else if (ARGS[0] == "pin") {
         // pin left / pin right — pin the focused column to a screen edge
@@ -1813,48 +1907,46 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         if (m_focusHistoryIdx < 0)
             m_focusHistoryIdx = (int64_t)m_focusHistory.size() - 1;
 
-        // Move backward in history
-        if (m_focusHistoryIdx > 0) {
+        m_focusHistoryNavigating = true;
+        while (m_focusHistoryIdx > 0) {
             m_focusHistoryIdx--;
-            m_focusHistoryNavigating = true;
-
             auto target = m_focusHistory[m_focusHistoryIdx].lock();
-            if (target) {
-                auto WDATA = dataFor(target);
-                if (WDATA) {
-                    m_scrollingData->centerOrFitCol(WDATA->column.lock());
-                    m_scrollingData->recalculate();
-                    Desktop::focusState()->fullWindowFocus(target->window(), Desktop::FOCUS_REASON_OTHER);
-                    if (target->window())
-                        g_pCompositor->warpCursorTo(target->window()->middle());
-                }
-            }
+            if (!target)
+                continue;
+            auto WDATA = dataFor(target);
+            if (!WDATA)
+                continue;
 
-            m_focusHistoryNavigating = false;
+            m_scrollingData->centerOrFitCol(WDATA->column.lock());
+            m_scrollingData->recalculate();
+            Desktop::focusState()->fullWindowFocus(target->window(), Desktop::FOCUS_REASON_OTHER);
+            if (target->window())
+                g_pCompositor->warpCursorTo(target->window()->middle());
+            break;
         }
+        m_focusHistoryNavigating = false;
     } else if (ARGS[0] == "focusfwd") {
         if (!g_config.focus_history->value() || m_focusHistory.empty() || m_focusHistoryIdx < 0)
             return {};
 
-        // Move forward in history
-        if (m_focusHistoryIdx < (int64_t)m_focusHistory.size() - 1) {
+        m_focusHistoryNavigating = true;
+        while (m_focusHistoryIdx < (int64_t)m_focusHistory.size() - 1) {
             m_focusHistoryIdx++;
-            m_focusHistoryNavigating = true;
-
             auto target = m_focusHistory[m_focusHistoryIdx].lock();
-            if (target) {
-                auto WDATA = dataFor(target);
-                if (WDATA) {
-                    m_scrollingData->centerOrFitCol(WDATA->column.lock());
-                    m_scrollingData->recalculate();
-                    Desktop::focusState()->fullWindowFocus(target->window(), Desktop::FOCUS_REASON_OTHER);
-                    if (target->window())
-                        g_pCompositor->warpCursorTo(target->window()->middle());
-                }
-            }
+            if (!target)
+                continue;
+            auto WDATA = dataFor(target);
+            if (!WDATA)
+                continue;
 
-            m_focusHistoryNavigating = false;
+            m_scrollingData->centerOrFitCol(WDATA->column.lock());
+            m_scrollingData->recalculate();
+            Desktop::focusState()->fullWindowFocus(target->window(), Desktop::FOCUS_REASON_OTHER);
+            if (target->window())
+                g_pCompositor->warpCursorTo(target->window()->middle());
+            break;
         }
+        m_focusHistoryNavigating = false;
     }
     return {};
 }
@@ -2027,11 +2119,82 @@ float CScrollingLayout::autoWidthForTarget(SP<Layout::ITarget> target) {
     if (!w)
         return defaultColumnWidth();
 
-    // Check window class
     const std::string cls = w->m_class;
     auto it = m_config.autoWidthRules.find(cls);
     if (it != m_config.autoWidthRules.end())
         return it->second;
 
     return defaultColumnWidth();
+}
+
+int CScrollingLayout::effectiveFitMethod() const {
+    return m_fitMethodOverride >= 0 ? m_fitMethodOverride : (int)g_config.focus_fit_method->value();
+}
+
+void CScrollingLayout::parseConfig() {
+    // Parse column widths from explicit_column_widths (fall back to column_widths alias)
+    std::string widthsStr = g_config.explicit_column_widths->value();
+    if (widthsStr.empty())
+        widthsStr = g_config.column_widths->value();
+
+    m_config.configuredWidths.clear();
+    if (!widthsStr.empty()) {
+        const auto WIDTHS = CVarList(widthsStr, 0, ',');
+        for (size_t i = 0; i < WIDTHS.size(); ++i) {
+            try {
+                float w = std::stof(std::string(WIDTHS[i]));
+                w = std::clamp(w, MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
+                m_config.configuredWidths.push_back(w);
+            } catch (...) {}
+        }
+    }
+    if (m_config.configuredWidths.empty())
+        m_config.configuredWidths = {0.333f, 0.5f, 0.667f, 1.0f};
+    std::sort(m_config.configuredWidths.begin(), m_config.configuredWidths.end());
+
+    // Parse window_heights
+    const std::string heightsStr = g_config.window_heights->value();
+    m_config.configuredHeights.clear();
+    if (!heightsStr.empty()) {
+        const auto HEIGHTS = CVarList(heightsStr, 0, ',');
+        for (size_t i = 0; i < HEIGHTS.size(); ++i) {
+            try {
+                float h = std::stof(std::string(HEIGHTS[i]));
+                h = std::clamp(h, MIN_ROW_HEIGHT, MAX_ROW_HEIGHT);
+                m_config.configuredHeights.push_back(h);
+            } catch (...) {}
+        }
+    }
+    if (m_config.configuredHeights.empty())
+        m_config.configuredHeights = {0.333f, 0.5f, 0.667f, 1.0f};
+    std::sort(m_config.configuredHeights.begin(), m_config.configuredHeights.end());
+
+    // Parse auto_width_rules: "class:fraction, class2:fraction2, ..."
+    m_config.autoWidthRules.clear();
+    const std::string rulesStr = g_config.auto_width_rules->value();
+    if (!rulesStr.empty()) {
+        const auto trim = [](const std::string& s) -> std::string {
+            const auto start = s.find_first_not_of(" \t");
+            if (start == std::string::npos) return "";
+            const auto end = s.find_last_not_of(" \t");
+            return s.substr(start, end - start + 1);
+        };
+
+        const auto RULES = CVarList(rulesStr, 0, ',');
+        for (size_t i = 0; i < RULES.size(); ++i) {
+            const std::string rule     = std::string(RULES[i]);
+            const auto        colonPos = rule.find(':');
+            if (colonPos == std::string::npos)
+                continue;
+            const std::string cls      = trim(rule.substr(0, colonPos));
+            const std::string widthStr = trim(rule.substr(colonPos + 1));
+            if (cls.empty() || widthStr.empty())
+                continue;
+            try {
+                float w = std::stof(widthStr);
+                w = std::clamp(w, MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
+                m_config.autoWidthRules[cls] = w;
+            } catch (...) {}
+        }
+    }
 }
