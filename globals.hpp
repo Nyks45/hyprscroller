@@ -31,6 +31,7 @@ struct SConfig {
     SP<Config::Values::CIntValue>    click_edge_right;
     SP<Config::Values::CIntValue>    follow_hover;
     SP<Config::Values::CIntValue>    hover_delay_ms;
+    SP<Config::Values::CIntValue>    overview_animate;
 };
 
 inline SConfig g_config;

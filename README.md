@@ -14,6 +14,7 @@ Inspired by [hyprscroller](https://github.com/dawsers/hyprscroller) (MIT) — re
 - Column pinning to left/right screen edge
 - Column collapse/expand toggle
 - Zen mode — show only the focused column
+- Win+Tab-style overview grid (flat tile view with click-to-focus and keyboard navigation)
 - Focus history (back/forward navigation)
 - Per-window-class automatic column width rules
 - Column-level workspace movement
@@ -74,6 +75,7 @@ All options go inside `plugin { hyprscrolling { ... } }` in your Hyprland config
 | `auto_width_rules` | string | `` | Per-class automatic column width: `firefox:0.7, kitty:0.3` |
 | `click_edge_left` | int (px) | `90` | Cursor x distance from left monitor edge that suppresses click-to-scroll |
 | `click_edge_right` | int (px) | `60` | Cursor x distance from right monitor edge that suppresses click-to-scroll |
+| `overview_animate` | bool | `true` | Animate overview enter/exit transitions. Disable on iGPUs for instant snap |
 
 ### Example
 
@@ -146,6 +148,8 @@ bind = SUPER, key, layoutmsg, <message>
 | Message | Description |
 |---|---|
 | `zen` | Show only the focused column (focus mode). Toggle to exit |
+| `overview` | Toggle Win+Tab-style flat grid of all windows. Click a window to focus it and restore the layout |
+| `overview_confirm` | Confirm the currently focused window in overview and exit (use with `focus l/r/u/d` for keyboard navigation) |
 | `pin left` | Pin current column to the left screen edge (stays fixed while scrolling) |
 | `pin right` | Pin current column to the right screen edge |
 | `unpin` | Remove pin from current column |

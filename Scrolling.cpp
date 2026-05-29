@@ -226,7 +226,10 @@ void SScrollingLayoutData::centerCol(SP<SColumnData> c) {
         if (COL != c)
             currentLeft += ITEM_WIDTH;
         else {
-            leftOffset = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.0;
+            leftOffsetAnimStart        = leftOffset;
+            leftOffsetAnimTimer.reset();
+            leftOffsetAnimationTarget  = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.0;
+            leftOffsetIsAnimating      = true;
             return;
         }
     }
@@ -247,7 +250,12 @@ void SScrollingLayoutData::fitCol(SP<SColumnData> c) {
         if (COL != c)
             currentLeft += ITEM_WIDTH;
         else {
-            leftOffset = std::clamp((double)leftOffset, currentLeft - USABLE.w + ITEM_WIDTH, currentLeft);
+            const double base   = leftOffsetIsAnimating ? leftOffsetAnimationTarget : leftOffset;
+            double clamped      = std::clamp(base, currentLeft - USABLE.w + ITEM_WIDTH, currentLeft);
+            leftOffsetAnimStart        = leftOffset;
+            leftOffsetAnimTimer.reset();
+            leftOffsetAnimationTarget  = clamped;
+            leftOffsetIsAnimating      = true;
             return;
         }
     }
@@ -271,13 +279,16 @@ void SScrollingLayoutData::fitCol2(SP<SColumnData> c) {
         else {
             double idealOffset = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.0;
 
+            leftOffsetAnimStart = leftOffset;
+            leftOffsetAnimTimer.reset();
             if (maxExtent < USABLE.w) {
-                leftOffset = (maxExtent - USABLE.w) / 2.0;
+                leftOffsetAnimationTarget = (maxExtent - USABLE.w) / 2.0;
             } else {
                 double lo = 0.0;
                 double hi = maxExtent - USABLE.w;
-                leftOffset = std::clamp(idealOffset, lo, std::max(lo, hi));
+                leftOffsetAnimationTarget = std::clamp(idealOffset, lo, std::max(lo, hi));
             }
+            leftOffsetIsAnimating = true;
             return;
         }
     }
@@ -368,23 +379,59 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
         }
     }
 
-    const double PINNED_L  = pinnedWidthLeft();
-    const double PINNED_R  = pinnedWidthRight();
-    const double SCROLL_W  = USABLE.w - PINNED_L - PINNED_R;
-    const double COLLAPSED_PX = g_config.collapsed_width->value();
-
-    // Count scrollable columns and their total width (accounting for collapsed)
-    double scrollableMaxWidth = 0;
-    for (const auto& COL : columns) {
-        if (COL->pinned != PIN_NONE)
-            continue;
-        if (COL->collapsed) {
-            scrollableMaxWidth += COLLAPSED_PX;
-        } else {
-            const double ITEM_WIDTH = g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth;
-            scrollableMaxWidth += ITEM_WIDTH;
+    // Overview mode: flat thumbnail grid (Win+Tab style).
+    // All windows are arranged as equal-sized tiles in a grid that fills the
+    // screen, ignoring column structure. Navigation (focus l/r/u/d) still works
+    // in terms of the underlying column layout.
+    if (layout->m_overviewActive) {
+        // Collect all windows in layout order (column-major)
+        std::vector<SP<SScrollingWindowData>> allWindows;
+        for (const auto& COL : columns) {
+            for (const auto& WDATA : COL->windowDatas)
+                allWindows.push_back(WDATA);
         }
+        if (allWindows.empty()) return;
+
+        constexpr double GAP  = 16.0;
+        const size_t     total = allWindows.size();
+        const size_t     gridCols = std::max(size_t{1}, (size_t)std::ceil(std::sqrt((double)total)));
+        const size_t     gridRows = (total + gridCols - 1) / gridCols;
+        const double     cellW    = std::max(1.0, (USABLE.w - GAP * (gridCols + 1)) / (double)gridCols);
+        const double     cellH    = std::max(1.0, (USABLE.h - GAP * (gridRows + 1)) / (double)gridRows);
+
+        for (size_t i = 0; i < allWindows.size(); ++i) {
+            const auto&  WDATA = allWindows[i];
+            const size_t row   = i / gridCols;
+            const size_t col   = i % gridCols;
+            const double x     = GAP + col * (cellW + GAP);
+            const double y     = GAP + row * (cellH + GAP);
+
+            WDATA->layoutBox = CBox{x, y, cellW, cellH}.translate(WORKAREA.pos());
+
+            auto target = WDATA->target.lock();
+            if (target) {
+                CBox box = WDATA->layoutBox;
+                box.round();
+                target->setPositionGlobal(box);
+                if (forceInstant) { target->warpPositionSize(); target->damageEntire(); }
+            }
+        }
+        return;
     }
+
+    const double COLLAPSED_PX = g_config.collapsed_width->value();
+    const bool   FSO          = g_config.fullscreen_on_one_column->value() && columns.size() == 1;
+
+    // Single pass: pinned widths + scrollable total (replaces 3 separate iterations)
+    // FSO (fullscreen single) only applies to unpinned scrollable columns.
+    double PINNED_L = 0, PINNED_R = 0, scrollableMaxWidth = 0;
+    for (const auto& COL : columns) {
+        const double nominalW = COL->collapsed ? COLLAPSED_PX : USABLE.w * COL->columnWidth;
+        if (COL->pinned == PIN_LEFT)       PINNED_L += nominalW;
+        else if (COL->pinned == PIN_RIGHT) PINNED_R += nominalW;
+        else                               scrollableMaxWidth += (FSO ? USABLE.w : nominalW);
+    }
+    const double SCROLL_W = USABLE.w - PINNED_L - PINNED_R;
 
     const double cameraLeft = scrollableMaxWidth < SCROLL_W ? std::round((scrollableMaxWidth - SCROLL_W) / 2.0) : leftOffset;
 
@@ -447,8 +494,7 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
             continue;
 
         double       currentTop = 0.0;
-        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX :
-                                  (g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth);
+        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX : (FSO ? USABLE.w : USABLE.w * COL->columnWidth);
 
         for (const auto& WDATA : COL->windowDatas) {
             WDATA->layoutBox = CBox{currentLeft, currentTop, ITEM_WIDTH, WDATA->windowSize * USABLE.h}
@@ -722,6 +768,23 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
 
     if (!m_tickCallback) {
         m_tickCallback = Event::bus()->m_events.tick.listen([this]() {
+            if (m_scrollingData->leftOffsetIsAnimating) {
+                constexpr double DURATION_MS = 220.0;
+                const double elapsed = m_scrollingData->leftOffsetAnimTimer.getMillis();
+                if (elapsed >= DURATION_MS) {
+                    m_scrollingData->leftOffset            = m_scrollingData->leftOffsetAnimationTarget;
+                    m_scrollingData->leftOffsetIsAnimating = false;
+                } else {
+                    const double t   = elapsed / DURATION_MS;
+                    const double inv = 1.0 - t;
+                    // ease-out cubic: smooth deceleration, hits target exactly at DURATION_MS
+                    m_scrollingData->leftOffset = m_scrollingData->leftOffsetAnimStart +
+                        (m_scrollingData->leftOffsetAnimationTarget - m_scrollingData->leftOffsetAnimStart) *
+                        (1.0 - inv * inv * inv);
+                }
+                m_scrollingData->recalculate();
+            }
+
             auto target = m_hoverTarget.lock();
             if (!target || m_hoverTimer.getMillis() < (double)g_config.hover_delay_ms->value())
                 return;
@@ -815,6 +878,7 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
         const auto   USABLE       = usableArea();
         const double COLLAPSED_PX = g_config.collapsed_width->value();
         m_scrollingData->leftOffset -= COL->collapsed ? COLLAPSED_PX : USABLE.w * COL->columnWidth;
+        m_scrollingData->leftOffsetIsAnimating = false;
     }
 
     COL->remove(target);
@@ -829,6 +893,7 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
     const double SCROLL_W  = USABLE.w - m_scrollingData->pinnedWidthLeft() - m_scrollingData->pinnedWidthRight();
     m_scrollingData->leftOffset = std::clamp((double)m_scrollingData->leftOffset, 0.0,
         std::max(m_scrollingData->maxWidth() - SCROLL_W, 0.0));
+    m_scrollingData->leftOffsetIsAnimating = false;
 
     m_scrollingData->recalculate();
 }
@@ -1051,6 +1116,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             const auto COL = m_scrollingData->next(WDATA->column.lock());
             if (!COL) {
                 m_scrollingData->leftOffset = m_scrollingData->maxWidth();
+                m_scrollingData->leftOffsetIsAnimating = false;
                 m_scrollingData->recalculate();
                 focusTargetUpdate(nullptr);
                 return {};
@@ -1114,6 +1180,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             return {};
 
         m_scrollingData->leftOffset -= *PLUSMINUS;
+        m_scrollingData->leftOffsetIsAnimating = false;
         m_scrollingData->recalculate();
 
         const auto ATCENTER = m_scrollingData->atCenter();
@@ -1355,6 +1422,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 }
             }
             m_scrollingData->leftOffset = scrollableOffsetBefore(activeIdx);
+            m_scrollingData->leftOffsetIsAnimating = false;
             m_scrollingData->recalculate();
         } else if (ARGS[1] == "all") {
             if (m_scrollingData->columns.size() == 0)
@@ -1407,6 +1475,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 return {};
 
             m_scrollingData->leftOffset = scrollableOffsetBefore(foundAt);
+            m_scrollingData->leftOffsetIsAnimating = false;
             m_scrollingData->recalculate();
         } else if (ARGS[1] == "tobeg") {
             if (m_scrollingData->columns.size() == 0)
@@ -1441,6 +1510,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 return {};
 
             m_scrollingData->leftOffset = 0;
+            m_scrollingData->leftOffsetIsAnimating = false;
             m_scrollingData->recalculate();
         } else if (ARGS[1] == "visible") {
             if (m_scrollingData->columns.size() == 0)
@@ -1468,6 +1538,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 return {};
 
             m_scrollingData->leftOffset = scrollableOffsetBefore(foundAt);
+            m_scrollingData->leftOffsetIsAnimating = false;
 
             for (const auto& v : visible) {
                 v->columnWidth = 1.F / (float)visible.size();
@@ -1948,6 +2019,100 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             break;
         }
         m_focusHistoryNavigating = false;
+    } else if (ARGS[0] == "overview_confirm") {
+        if (!m_overviewActive)
+            return {};
+
+        SP<SColumnData> focusedCol;
+        auto focusedWindow = Desktop::focusState()->window();
+        if (focusedWindow) {
+            auto parent = m_parent.lock();
+            if (parent && parent->space()) {
+                for (auto& wt : parent->space()->targets()) {
+                    auto t = wt.lock();
+                    if (t && t->window() == focusedWindow) {
+                        auto WDATA = dataFor(t);
+                        if (WDATA)
+                            focusedCol = WDATA->column.lock();
+                        break;
+                    }
+                }
+            }
+        }
+
+        m_overviewActive = false;
+        m_overviewClickHook.reset();
+
+        if (focusedCol)
+            m_scrollingData->centerOrFitCol(focusedCol);
+        else {
+            m_scrollingData->leftOffset = m_overviewSavedOffset;
+            m_scrollingData->leftOffsetIsAnimating = false;
+        }
+
+        m_scrollingData->recalculate(!g_config.overview_animate->value());
+    } else if (ARGS[0] == "overview") {
+        if (!m_overviewActive) {
+            if (m_scrollingData->columns.empty())
+                return {};
+
+            // Save only the offset — column widths are not touched; the
+            // overview grid is rendered entirely inside recalculate().
+            m_overviewSavedOffset = m_scrollingData->leftOffset;
+            m_scrollingData->leftOffsetIsAnimating = false;
+            m_overviewActive = true;
+            m_scrollingData->recalculate(!g_config.overview_animate->value());
+
+            m_overviewClickHook = Event::bus()->m_events.input.mouse.button.listen([this](IPointer::SButtonEvent ev, Event::SCallbackInfo&) {
+                if (ev.state != WL_POINTER_BUTTON_STATE_PRESSED || !m_overviewActive)
+                    return;
+
+                const auto MOUSECOORDS = g_pInputManager->getMouseCoordsInternal();
+                auto parent = m_parent.lock();
+                SP<SColumnData>      clickedCol;
+                SP<Layout::ITarget>  clickedTarget;
+
+                if (parent && parent->space()) {
+                    for (auto& wt : parent->space()->targets()) {
+                        auto t = wt.lock();
+                        if (!t || !t->window()) continue;
+                        auto w = t->window();
+                        CBox box{w->m_realPosition->value().x, w->m_realPosition->value().y,
+                                 w->m_realSize->value().x, w->m_realSize->value().y};
+                        if (MOUSECOORDS.x >= box.x && MOUSECOORDS.x <= box.x + box.w &&
+                            MOUSECOORDS.y >= box.y && MOUSECOORDS.y <= box.y + box.h) {
+                            clickedTarget = t;
+                            auto WDATA = dataFor(t);
+                            if (WDATA)
+                                clickedCol = WDATA->column.lock();
+                            break;
+                        }
+                    }
+                }
+
+                m_overviewActive = false;
+                m_overviewClickHook.reset();
+
+                if (clickedCol)
+                    m_scrollingData->centerOrFitCol(clickedCol);
+                else {
+                    m_scrollingData->leftOffset = m_overviewSavedOffset;
+                    m_scrollingData->leftOffsetIsAnimating = false;
+                }
+
+                m_scrollingData->recalculate(!g_config.overview_animate->value());
+
+                if (clickedTarget)
+                    focusTargetUpdate(clickedTarget);
+            });
+
+        } else {
+            m_overviewActive = false;
+            m_overviewClickHook.reset();
+            m_scrollingData->leftOffset = m_overviewSavedOffset;
+            m_scrollingData->leftOffsetIsAnimating = false;
+            m_scrollingData->recalculate(!g_config.overview_animate->value());
+        }
     }
     return {};
 }

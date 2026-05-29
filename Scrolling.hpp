@@ -70,8 +70,12 @@ struct SScrollingLayoutData {
         ;
     }
 
-    std::vector<SP<SColumnData>> columns;
-    float                        leftOffset = 0;
+        std::vector<SP<SColumnData>> columns;
+        float                        leftOffset                  = 0;
+        double                       leftOffsetAnimationTarget   = 0;
+        double                       leftOffsetAnimStart         = 0;
+        CTimer                       leftOffsetAnimTimer;
+        bool                         leftOffsetIsAnimating       = false;
 
     SP<SColumnData>              add();
     SP<SColumnData>              add(int after);
@@ -90,7 +94,7 @@ struct SScrollingLayoutData {
     void                         fitCol2(SP<SColumnData> c);
     void                         centerOrFitCol(SP<SColumnData> c);
 
-    void                         recalculate(bool forceInstant = false);
+        void                         recalculate(bool forceInstant = false);
 
     CScrollingLayout*            layout = nullptr;
     WP<SScrollingLayoutData>     self;
@@ -145,6 +149,11 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     // Zen mode
     bool                                             m_zenMode = false;
     SP<SColumnData>                                  m_zenColumn;
+
+    // Overview mode
+    bool                                             m_overviewActive = false;
+    float                                            m_overviewSavedOffset = 0;
+    CHyprSignalListener                              m_overviewClickHook;
 
     SP<SScrollingWindowData> findBestNeighbor(SP<SScrollingWindowData> pCurrent, SP<SColumnData> pTargetCol);
     SP<SScrollingWindowData> dataFor(SP<Layout::ITarget> t);
