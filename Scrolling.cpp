@@ -812,8 +812,9 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
 
     if (!m_scrollingData->next(COL)) {
         // move the view if this is the last column
-        const auto USABLE = usableArea();
-        m_scrollingData->leftOffset -= USABLE.w * COL->columnWidth;
+        const auto   USABLE       = usableArea();
+        const double COLLAPSED_PX = g_config.collapsed_width->value();
+        m_scrollingData->leftOffset -= COL->collapsed ? COLLAPSED_PX : USABLE.w * COL->columnWidth;
     }
 
     COL->remove(target);
