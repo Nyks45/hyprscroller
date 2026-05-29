@@ -226,9 +226,12 @@ void SScrollingLayoutData::centerCol(SP<SColumnData> c) {
         if (COL != c)
             currentLeft += ITEM_WIDTH;
         else {
+            const double target = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.0;
+            if (!leftOffsetIsAnimating && std::abs(target - leftOffset) < 0.5)
+                return;
             leftOffsetAnimStart        = leftOffset;
             leftOffsetAnimTimer.reset();
-            leftOffsetAnimationTarget  = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.0;
+            leftOffsetAnimationTarget  = target;
             leftOffsetIsAnimating      = true;
             return;
         }
@@ -250,8 +253,10 @@ void SScrollingLayoutData::fitCol(SP<SColumnData> c) {
         if (COL != c)
             currentLeft += ITEM_WIDTH;
         else {
-            const double base   = leftOffsetIsAnimating ? leftOffsetAnimationTarget : leftOffset;
-            double clamped      = std::clamp(base, currentLeft - USABLE.w + ITEM_WIDTH, currentLeft);
+            const double base    = leftOffsetIsAnimating ? leftOffsetAnimationTarget : leftOffset;
+            const double clamped = std::clamp(base, currentLeft - USABLE.w + ITEM_WIDTH, currentLeft);
+            if (!leftOffsetIsAnimating && std::abs(clamped - leftOffset) < 0.5)
+                return;
             leftOffsetAnimStart        = leftOffset;
             leftOffsetAnimTimer.reset();
             leftOffsetAnimationTarget  = clamped;
@@ -279,16 +284,20 @@ void SScrollingLayoutData::fitCol2(SP<SColumnData> c) {
         else {
             double idealOffset = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.0;
 
-            leftOffsetAnimStart = leftOffset;
-            leftOffsetAnimTimer.reset();
+            double target;
             if (maxExtent < USABLE.w) {
-                leftOffsetAnimationTarget = (maxExtent - USABLE.w) / 2.0;
+                target = (maxExtent - USABLE.w) / 2.0;
             } else {
                 double lo = 0.0;
                 double hi = maxExtent - USABLE.w;
-                leftOffsetAnimationTarget = std::clamp(idealOffset, lo, std::max(lo, hi));
+                target = std::clamp(idealOffset, lo, std::max(lo, hi));
             }
-            leftOffsetIsAnimating = true;
+            if (!leftOffsetIsAnimating && std::abs(target - leftOffset) < 0.5)
+                return;
+            leftOffsetAnimStart       = leftOffset;
+            leftOffsetAnimTimer.reset();
+            leftOffsetAnimationTarget = target;
+            leftOffsetIsAnimating     = true;
             return;
         }
     }
@@ -777,12 +786,14 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                 } else {
                     const double t   = elapsed / DURATION_MS;
                     const double inv = 1.0 - t;
-                    // ease-out cubic: smooth deceleration, hits target exactly at DURATION_MS
                     m_scrollingData->leftOffset = m_scrollingData->leftOffsetAnimStart +
                         (m_scrollingData->leftOffsetAnimationTarget - m_scrollingData->leftOffsetAnimStart) *
                         (1.0 - inv * inv * inv);
                 }
-                m_scrollingData->recalculate();
+                // forceInstant=true: plugin owns window positioning during scroll.
+                // Using forceInstant=false here starts a Hyprland window animation that
+                // is immediately interrupted the next tick, causing the up/down jitter.
+                m_scrollingData->recalculate(true);
             }
 
             auto target = m_hoverTarget.lock();
@@ -899,7 +910,9 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
 }
 
 void CScrollingLayout::recalculate(Layout::eRecalculateReason reason) {
-    m_scrollingData->recalculate();
+    // Use forceInstant while scroll-animating so Hyprland-triggered recalculates
+    // don't start competing window animations that the next tick would snap.
+    m_scrollingData->recalculate(m_scrollingData->leftOffsetIsAnimating);
 }
 
 void CScrollingLayout::resizeTarget(const Vector2D& delta, SP<Layout::ITarget> target, Layout::eRectCorner corner) {
