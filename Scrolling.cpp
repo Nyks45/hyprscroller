@@ -250,7 +250,7 @@ void SScrollingLayoutData::fitCol(SP<SColumnData> c) {
         if (COL != c)
             currentLeft += ITEM_WIDTH;
         else {
-            const double clamped = std::clamp(leftOffset, currentLeft - USABLE.w + ITEM_WIDTH, currentLeft);
+            const double clamped = std::clamp((double)leftOffset, currentLeft - USABLE.w + ITEM_WIDTH, currentLeft);
             if (std::abs(clamped - leftOffset) < 0.5)
                 return;
             leftOffset = clamped;
