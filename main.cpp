@@ -12,15 +12,13 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     PHANDLE = handle;
-
-    const std::string HASH        = __hyprland_api_get_hash();
-    const std::string CLIENT_HASH = __hyprland_api_get_client_hash();
-
-    if (HASH != CLIENT_HASH) {
-        HyprlandAPI::addNotification(PHANDLE, "[hyprscrolling] Failure in initialization: Version mismatch (headers ver is not equal to running hyprland ver)",
-                                     CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
-        throw std::runtime_error("[hs] Version mismatch");
-    }
+    // const std::string HASH        = __hyprland_api_get_hash();
+    // const std::string CLIENT_HASH = __hyprland_api_get_client_hash();
+    // if (HASH != CLIENT_HASH) {
+    //     HyprlandAPI::addNotification(PHANDLE, "[hyprscrolling] HASH: " + HASH + " CLIENT: " + CLIENT_HASH,
+    //                                  CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
+    //     throw std::runtime_error("[hs] Version mismatch");
+    // }
 
     g_config.fullscreen_on_one_column = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:fullscreen_on_one_column", "fullscreen single column", 0);
     g_config.column_width             = makeShared<Config::Values::CFloatValue>("plugin:hyprscrolling:column_width", "default column width", 0.5);
@@ -43,7 +41,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_config.click_edge_right         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:click_edge_right", "right edge exclusion for clicks in px", 60);
     g_config.follow_hover             = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:follow_hover", "follow hover: 0=off 1=on with delay", 0);
     g_config.hover_delay_ms           = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:hover_delay_ms", "hover delay in ms before scroll", 500);
-    g_config.overview_animate         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:overview_animate", "animate overview transitions (0=instant, 1=animated)", 1);
+    g_config.overview_animate         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:overview_animate", "animate overview transitions (0=instant, 1=animated)", 0);
 
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.fullscreen_on_one_column);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.column_width);
