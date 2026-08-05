@@ -18,9 +18,7 @@ struct SConfig {
     SP<Config::Values::CFloatValue>  follow_min_visible;
     SP<Config::Values::CIntValue>    follow_debounce_ms;
     SP<Config::Values::CIntValue>    focus_wrap;
-    SP<Config::Values::CIntValue>    focus_edge_ms;
     SP<Config::Values::CIntValue>    center_active_column;
-    SP<Config::Values::CIntValue>    center_active_window;
     SP<Config::Values::CStringValue> explicit_column_widths;
     SP<Config::Values::CStringValue> column_widths;
     SP<Config::Values::CStringValue> window_heights;
