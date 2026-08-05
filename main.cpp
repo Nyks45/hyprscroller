@@ -12,13 +12,17 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     PHANDLE = handle;
-    // const std::string HASH        = __hyprland_api_get_hash();
-    // const std::string CLIENT_HASH = __hyprland_api_get_client_hash();
-    // if (HASH != CLIENT_HASH) {
-    //     HyprlandAPI::addNotification(PHANDLE, "[hyprscrolling] HASH: " + HASH + " CLIENT: " + CLIENT_HASH,
-    //                                  CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
-    //     throw std::runtime_error("[hs] Version mismatch");
-    // }
+
+    // Guard against loading a plugin built against a different Hyprland than
+    // the running compositor. Without this, an ABI mismatch surfaces as a
+    // cryptic "undefined symbol" crash instead of a clear message.
+    const std::string HASH        = __hyprland_api_get_hash();
+    const std::string CLIENT_HASH = __hyprland_api_get_client_hash();
+    if (HASH != CLIENT_HASH) {
+        HyprlandAPI::addNotification(PHANDLE, "[hyprscrolling] Version mismatch - rebuild the plugin against the running Hyprland (HASH: " + HASH + " CLIENT: " + CLIENT_HASH + ")",
+                                     CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
+        throw std::runtime_error("[hs] Version mismatch");
+    }
 
     g_config.fullscreen_on_one_column = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:fullscreen_on_one_column", "fullscreen single column", 0);
     g_config.column_width             = makeShared<Config::Values::CFloatValue>("plugin:hyprscrolling:column_width", "default column width", 0.5);

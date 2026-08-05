@@ -2,6 +2,7 @@
 #include "globals.hpp"
 
 #include <algorithm>
+#include <linux/input-event-codes.h>
 
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
@@ -39,9 +40,10 @@ namespace hyprscrolling_compat {
         for (auto& m : State::monitorState()->monitors()) {
             if (!m)
                 continue;
-            const auto P = m->m_position;
-            const auto S = m->m_size;
-            if (COORDS.x >= P.x && COORDS.y >= P.y && COORDS.x < P.x + S.x && COORDS.y < P.y + S.y)
+            // Use logicalBox() for consistency with the rest of the plugin
+            // (accounts for scaling/transforms, not just raw position/size).
+            const auto BOX = m->logicalBox();
+            if (COORDS.x >= BOX.x && COORDS.y >= BOX.y && COORDS.x < BOX.x + BOX.w && COORDS.y < BOX.y + BOX.h)
                 return m;
         }
         return nullptr;
@@ -153,7 +155,10 @@ void SColumnData::up(SP<SScrollingWindowData> w) {
 }
 
 void SColumnData::down(SP<SScrollingWindowData> w) {
-    for (size_t i = 0; i < windowDatas.size() - 1; ++i) {
+    if (windowDatas.empty())
+        return;
+
+    for (size_t i = 0; i + 1 < windowDatas.size(); ++i) {
         if (windowDatas[i] != w)
             continue;
 
@@ -163,7 +168,10 @@ void SColumnData::down(SP<SScrollingWindowData> w) {
 }
 
 SP<SScrollingWindowData> SColumnData::next(SP<SScrollingWindowData> w) {
-    for (size_t i = 0; i < windowDatas.size() - 1; ++i) {
+    if (windowDatas.empty())
+        return nullptr;
+
+    for (size_t i = 0; i + 1 < windowDatas.size(); ++i) {
         if (windowDatas[i] != w)
             continue;
 
@@ -750,7 +758,7 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
 
     if (!m_buttonCallback) {
         m_buttonCallback = Event::bus()->m_events.input.mouse.button.listen([this](IPointer::SButtonEvent ev, Event::SCallbackInfo& info) {
-            if (ev.button != 272 || ev.state != WL_POINTER_BUTTON_STATE_PRESSED)
+            if (ev.button != BTN_LEFT || ev.state != WL_POINTER_BUTTON_STATE_PRESSED)
                 return;
 
             auto parent = m_parent.lock();
