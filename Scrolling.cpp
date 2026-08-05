@@ -764,7 +764,7 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
     }
 
     if (!m_buttonCallback) {
-        m_buttonCallback = Event::bus()->m_events.input.mouse.button.listen([this](IPointer::SButtonEvent ev, Event::SCallbackInfo& info) {
+        m_buttonCallback = Event::bus()->m_events.input.mouse.button.listen([this](IPointer::SButtonEvent ev, Event::SCallbackInfo&) {
             if (ev.button != BTN_LEFT || ev.state != WL_POINTER_BUTTON_STATE_PRESSED)
                 return;
 
@@ -972,7 +972,7 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
     m_scrollingData->recalculate();
 }
 
-void CScrollingLayout::recalculate(Layout::eRecalculateReason reason) {
+void CScrollingLayout::recalculate(Layout::eRecalculateReason) {
     m_scrollingData->recalculate();
 }
 
@@ -2013,10 +2013,15 @@ void CScrollingLayout::moveTargetTo(SP<Layout::ITarget> t, Math::eDirection dir,
         COL->down(DATA);
 
     m_scrollingData->recalculate();
-    focusTargetUpdate(t);
-    auto w = t->window();
-    if (w)
-        Pointer::mgr()->warpTo(w->middle());
+
+    // Honor the silent flag: a silent move must not steal focus or warp the
+    // cursor (e.g. programmatic/rearrange moves).
+    if (!silent) {
+        focusTargetUpdate(t);
+        auto w = t->window();
+        if (w)
+            Pointer::mgr()->warpTo(w->middle());
+    }
 }
 
 SP<SScrollingWindowData> CScrollingLayout::dataFor(SP<Layout::ITarget> t) {

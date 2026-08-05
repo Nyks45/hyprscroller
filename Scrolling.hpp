@@ -31,7 +31,7 @@ struct SScrollingWindowData {
 };
 
 struct SColumnData {
-    SColumnData(CScrollingLayout* layout) : layout(layout) {
+    SColumnData(CScrollingLayout* pLayout) : layout(pLayout) {
         ;
     }
 
