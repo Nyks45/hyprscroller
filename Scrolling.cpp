@@ -883,7 +883,63 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
 }
 
 void CScrollingLayout::movedTarget(SP<Layout::ITarget> target, std::optional<Vector2D> focalPoint) {
-    newTarget(target);
+    if (!target)
+        return;
+
+    // Without a drop position, or before any columns exist, behave like a
+    // fresh insert next to the focused window (previous behaviour).
+    if (!focalPoint || m_scrollingData->columns.empty()) {
+        newTarget(target);
+        return;
+    }
+
+    // Make sure parsed config (column widths etc.) is available even if this
+    // is the very first target to enter the layout via a drop.
+    if (!m_configCallback) {
+        parseConfig();
+        m_configCallback = Event::bus()->m_events.config.reloaded.listen([this]() { parseConfig(); });
+    }
+
+    const Vector2D DROP = *focalPoint;
+
+    // Find the scrollable column whose horizontal span contains the drop point.
+    // layoutBox and the drop point are both in global logical coordinates.
+    SP<SColumnData> dropCol;
+    for (const auto& COL : m_scrollingData->columns) {
+        if (COL->windowDatas.empty())
+            continue;
+
+        double left  = COL->windowDatas.front()->layoutBox.x;
+        double right = left;
+        for (const auto& WD : COL->windowDatas) {
+            left  = std::min(left, WD->layoutBox.x);
+            right = std::max(right, WD->layoutBox.x + WD->layoutBox.w);
+        }
+
+        if (DROP.x >= left && DROP.x < right) {
+            dropCol = COL;
+            break;
+        }
+    }
+
+    // If the drop point isn't over any column, fall back to the default
+    // placement. This is also the safe path if focalPoint ever arrives in a
+    // different coordinate space than layoutBox: no regression vs. before.
+    if (!dropCol) {
+        newTarget(target);
+        return;
+    }
+
+    // Insert into the resolved column at the vertical slot under the drop point.
+    // add(t, after) inserts at index (after + 1), so that's where the new
+    // window ends up.
+    const size_t afterIdx = dropCol->idxForHeight(DROP.y);
+    dropCol->add(target, (int)afterIdx);
+    if (afterIdx + 1 < dropCol->windowDatas.size())
+        dropCol->lastFocusedWindow = dropCol->windowDatas[afterIdx + 1];
+
+    m_scrollingData->centerOrFitCol(dropCol);
+    m_scrollingData->recalculate();
 }
 
 void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
