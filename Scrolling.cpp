@@ -64,6 +64,10 @@ constexpr float MAX_COLUMN_WIDTH = 1.F;
 constexpr float MIN_ROW_HEIGHT   = 0.1F;
 constexpr float MAX_ROW_HEIGHT   = 1.F;
 
+// Coordinate used to park hidden windows (e.g. non-zen columns in zen mode)
+// well outside any realistic multi-monitor logical coordinate space.
+constexpr double OFFSCREEN_COORD = -100000.0;
+
 
 //
 void SColumnData::add(SP<Layout::ITarget> t) {
@@ -407,7 +411,7 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
                 if (COL == zenCol)
                     continue;
                 for (const auto& WDATA : COL->windowDatas) {
-                    WDATA->layoutBox = CBox{-9999, -9999, 1, 1};
+                    WDATA->layoutBox = CBox{OFFSCREEN_COORD, OFFSCREEN_COORD, 1, 1};
                     auto target = WDATA->target.lock();
                     if (target) {
                         target->setPositionGlobal(WDATA->layoutBox);
@@ -556,6 +560,9 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
         }
 
         currentLeft += ITEM_WIDTH;
+        // Once columns extend past the viewport, nudge subsequent (off-screen)
+        // columns by 1px so adjacent windows never share an exact edge
+        // coordinate (avoids a 1px seam/overlap at integer boundaries).
         if (currentLeft >= SCROLL_W)
             currentLeft++;
     }
@@ -761,6 +768,11 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
             if (ev.button != BTN_LEFT || ev.state != WL_POINTER_BUTTON_STATE_PRESSED)
                 return;
 
+            // Overview owns clicks while active (see m_overviewClickHook);
+            // don't also run click-to-center here.
+            if (m_overviewActive)
+                return;
+
             auto parent = m_parent.lock();
             if (!parent || !parent->space())
                 return;
@@ -772,6 +784,12 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
             Vector2D cursor = g_pInputManager->getMouseCoordsInternal();
             auto PMONITOR = hyprscrolling_compat::monitorFromCursor();
             if (!PMONITOR)
+                return;
+
+            // Only react if this layout's workspace is the one currently shown
+            // on the monitor under the cursor. Without this, a hidden
+            // same-monitor workspace's instance could process the click.
+            if (PMONITOR->m_activeWorkspace != ws)
                 return;
 
             // exclude clicks on left/right screen edges (caelestia)
@@ -806,43 +824,7 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
         });
     }
 
-    if (!m_tickCallback) {
-        m_tickCallback = Event::bus()->m_events.tick.listen([this]() {
-            auto target = m_hoverTarget.lock();
-            if (!target || m_hoverTimer.getMillis() < (double)g_config.hover_delay_ms->value())
-                return;
-
-            // verify cursor is still over this window and not in exclusion zone
-            Vector2D cursor = g_pInputManager->getMouseCoordsInternal();
-            auto PMONITOR = hyprscrolling_compat::monitorFromCursor();
-            if (!PMONITOR)
-                return;
-            const auto MON_BOX = PMONITOR->logicalBox();
-            if (cursor.x < MON_BOX.x + (double)g_config.click_edge_left->value() ||
-                cursor.x > MON_BOX.x + MON_BOX.w - (double)g_config.click_edge_right->value())
-                return;
-
-            auto PWIN = target->window();
-            if (!PWIN)
-                return;
-            CBox box = {PWIN->positionAnimation()->value().x, PWIN->positionAnimation()->value().y, PWIN->sizeAnimation()->value().x, PWIN->sizeAnimation()->value().y};
-            if (cursor.x < box.x || cursor.x > box.x + box.w || cursor.y < box.y || cursor.y > box.y + box.h)
-                return;
-
-            auto WDATA = dataFor(target);
-            if (!WDATA)
-                return;
-            auto COL = WDATA->column.lock();
-            if (!COL)
-                return;
-
-            m_scrollingData->centerOrFitCol(COL);
-            m_scrollingData->recalculate();
-
-            m_hoverTimer.reset();
-            m_hoverTarget.reset();
-        });
-    }
+    updateHoverTick();
 
     // Try to find the focused target for determining placement
     SP<Layout::ITarget> droppingOn = nullptr;
@@ -2158,6 +2140,54 @@ int CScrollingLayout::effectiveFitMethod() const {
     return m_fitMethodOverride >= 0 ? m_fitMethodOverride : (int)g_config.focus_fit_method->value();
 }
 
+void CScrollingLayout::updateHoverTick() {
+    if (!g_config.follow_hover->value()) {
+        // Feature disabled: don't keep a global tick listener around.
+        m_tickCallback.reset();
+        m_hoverTarget.reset();
+        return;
+    }
+
+    if (m_tickCallback)
+        return;
+
+    m_tickCallback = Event::bus()->m_events.tick.listen([this]() {
+        auto target = m_hoverTarget.lock();
+        if (!target || m_hoverTimer.getMillis() < (double)g_config.hover_delay_ms->value())
+            return;
+
+        // verify cursor is still over this window and not in exclusion zone
+        Vector2D cursor = g_pInputManager->getMouseCoordsInternal();
+        auto PMONITOR = hyprscrolling_compat::monitorFromCursor();
+        if (!PMONITOR)
+            return;
+        const auto MON_BOX = PMONITOR->logicalBox();
+        if (cursor.x < MON_BOX.x + (double)g_config.click_edge_left->value() ||
+            cursor.x > MON_BOX.x + MON_BOX.w - (double)g_config.click_edge_right->value())
+            return;
+
+        auto PWIN = target->window();
+        if (!PWIN)
+            return;
+        CBox box = {PWIN->positionAnimation()->value().x, PWIN->positionAnimation()->value().y, PWIN->sizeAnimation()->value().x, PWIN->sizeAnimation()->value().y};
+        if (cursor.x < box.x || cursor.x > box.x + box.w || cursor.y < box.y || cursor.y > box.y + box.h)
+            return;
+
+        auto WDATA = dataFor(target);
+        if (!WDATA)
+            return;
+        auto COL = WDATA->column.lock();
+        if (!COL)
+            return;
+
+        m_scrollingData->centerOrFitCol(COL);
+        m_scrollingData->recalculate();
+
+        m_hoverTimer.reset();
+        m_hoverTarget.reset();
+    });
+}
+
 void CScrollingLayout::parseConfig() {
     // Parse column widths from explicit_column_widths (fall back to column_widths alias)
     std::string widthsStr = g_config.explicit_column_widths->value();
@@ -2224,4 +2254,7 @@ void CScrollingLayout::parseConfig() {
             } catch (...) {}
         }
     }
+
+    // Register/tear down the hover tick listener according to follow_hover.
+    updateHoverTick();
 }

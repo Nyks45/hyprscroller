@@ -25,8 +25,7 @@ struct SScrollingWindowData {
 
     WP<Layout::ITarget> target;
     WP<SColumnData>     column;
-    float               windowSize             = 1.F;
-    bool                ignoreFullscreenChecks = false;
+    float               windowSize = 1.F;
 
     CBox                layoutBox;
 };
@@ -167,6 +166,10 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     float                    defaultColumnWidth();
     int                      effectiveFitMethod() const;
     void                     parseConfig();
+    // Registers the per-tick hover listener only while follow_hover is on,
+    // and tears it down otherwise. Avoids a global tick callback per layout
+    // instance in the common (hover-disabled) case.
+    void                     updateHoverTick();
 
     friend struct SScrollingLayoutData;
 };
