@@ -1131,21 +1131,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
     const auto ARGS = CVarList(message, 0, ' ');
     if (ARGS[0] == "move") {
         if (ARGS[1] == "+col" || ARGS[1] == "col") {
-            auto focusedTarget = Desktop::focusState()->window();
-            if (!focusedTarget)
-                return {};
-
-            SP<SScrollingWindowData> WDATA = nullptr;
-            auto                     parent = m_parent.lock();
-            if (parent && parent->space()) {
-                for (auto& wt : parent->space()->targets()) {
-                    auto t = wt.lock();
-                    if (t && t->window() == focusedTarget) {
-                        WDATA = dataFor(t);
-                        break;
-                    }
-                }
-            }
+            auto WDATA = focusedWindowData();
             if (!WDATA)
                 return {};
 
@@ -1167,19 +1153,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
 
             return {};
         } else if (ARGS[1] == "-col") {
-            auto focusedTarget = Desktop::focusState()->window();
-
-            SP<SScrollingWindowData> WDATA = nullptr;
-            auto                     parent = m_parent.lock();
-            if (parent && parent->space()) {
-                for (auto& wt : parent->space()->targets()) {
-                    auto t = wt.lock();
-                    if (t && t->window() == focusedTarget) {
-                        WDATA = dataFor(t);
-                        break;
-                    }
-                }
-            }
+            auto WDATA = focusedWindowData();
 
             if (!WDATA) {
                 if (m_scrollingData->columns.size() > 0) {
@@ -1221,21 +1195,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
 
         focusTargetUpdate(ATCENTER ? (*ATCENTER->windowDatas.begin())->target.lock() : nullptr);
     } else if (ARGS[0] == "colresize") {
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        SP<SScrollingWindowData> WDATA = nullptr;
-        auto                     parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    WDATA = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto WDATA = focusedWindowData();
 
         if (!WDATA)
             return {};
@@ -1309,21 +1269,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         if (ARGS[1].empty())
             return {};
 
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        SP<SScrollingWindowData> WDATA = nullptr;
-        auto                     parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    WDATA = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto WDATA = focusedWindowData();
 
         if (!WDATA)
             return {};
@@ -1395,37 +1341,14 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         if (ARGS[1].empty())
             return {};
 
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        auto parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    moveTargetTo(t, Math::fromChar(ARGS[1][0]), false);
-                    break;
-                }
-            }
+        auto WDATA = focusedWindowData();
+        if (WDATA) {
+            if (auto t = WDATA->target.lock())
+                moveTargetTo(t, Math::fromChar(ARGS[1][0]), false);
         }
     } else if (ARGS[0] == "fit") {
 
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        SP<SScrollingWindowData> WDATA = nullptr;
-        auto                     parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    WDATA = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto WDATA = focusedWindowData();
 
         // Helper: sum scrollable width of columns[0..i-1], skipping pinned, accounting for collapsed.
         const auto scrollableOffsetBefore = [&](size_t count) -> double {
@@ -1577,21 +1500,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             m_scrollingData->recalculate();
         }
     } else if (ARGS[0] == "focus") {
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        SP<SScrollingWindowData> WDATA = nullptr;
-        auto                     parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    WDATA = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto WDATA = focusedWindowData();
 
 
         if (!WDATA || ARGS[1].empty())
@@ -1687,21 +1596,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             default: return {};
         }
     } else if (ARGS[0] == "promote") {
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        SP<SScrollingWindowData> WDATA = nullptr;
-        auto                     parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    WDATA = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto WDATA = focusedWindowData();
 
         if (!WDATA)
             return {};
@@ -1723,21 +1618,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         if (ARGS.size() < 2)
             return {};
 
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        SP<SScrollingWindowData> WDATA = nullptr;
-        auto                     parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    WDATA = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto WDATA = focusedWindowData();
 
         if (!WDATA)
             return {};
@@ -1771,18 +1652,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         if (m_scrollingData->columns.empty())
             return {};
 
-        auto focusedWindow = Desktop::focusState()->window();
-        SP<SScrollingWindowData> focusedData = nullptr;
-        auto parent = m_parent.lock();
-        if (parent && parent->space() && focusedWindow) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    focusedData = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto focusedData = focusedWindowData();
 
         const auto columnToUse = (focusedData && focusedData->column.lock()) ? focusedData->column.lock() : m_scrollingData->atCenter();
         if (!columnToUse)
@@ -1792,21 +1662,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         m_scrollingData->recalculate();
     } else if (ARGS[0] == "pin") {
         // pin left / pin right — pin the focused column to a screen edge
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        SP<SScrollingWindowData> WDATA = nullptr;
-        auto                     parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    WDATA = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto WDATA = focusedWindowData();
         if (!WDATA)
             return {};
 
@@ -1827,21 +1683,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         m_scrollingData->recalculate();
     } else if (ARGS[0] == "unpin") {
         // unpin — unpin the focused column
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        SP<SScrollingWindowData> WDATA = nullptr;
-        auto                     parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    WDATA = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto WDATA = focusedWindowData();
         if (!WDATA)
             return {};
 
@@ -1856,21 +1698,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         if (ARGS.size() < 2 || ARGS[1].empty())
             return {};
 
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        SP<SScrollingWindowData> WDATA = nullptr;
-        auto                     parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    WDATA = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto WDATA = focusedWindowData();
         if (!WDATA)
             return {};
 
@@ -1880,21 +1708,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
 
         moveColToWorkspace(COL, ARGS[1]);
     } else if (ARGS[0] == "collapse") {
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        SP<SScrollingWindowData> WDATA = nullptr;
-        auto                     parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    WDATA = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto WDATA = focusedWindowData();
         if (!WDATA)
             return {};
 
@@ -1906,21 +1720,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         COL->collapsed = true;
         m_scrollingData->recalculate();
     } else if (ARGS[0] == "expand") {
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        SP<SScrollingWindowData> WDATA = nullptr;
-        auto                     parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    WDATA = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto WDATA = focusedWindowData();
         if (!WDATA)
             return {};
 
@@ -1935,21 +1735,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         m_scrollingData->centerOrFitCol(COL);
         m_scrollingData->recalculate();
     } else if (ARGS[0] == "togglecollapse") {
-        auto focusedWindow = Desktop::focusState()->window();
-        if (!focusedWindow)
-            return {};
-
-        SP<SScrollingWindowData> WDATA = nullptr;
-        auto                     parent = m_parent.lock();
-        if (parent && parent->space()) {
-            for (auto& wt : parent->space()->targets()) {
-                auto t = wt.lock();
-                if (t && t->window() == focusedWindow) {
-                    WDATA = dataFor(t);
-                    break;
-                }
-            }
-        }
+        auto WDATA = focusedWindowData();
         if (!WDATA)
             return {};
 
@@ -1976,21 +1762,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             m_scrollingData->recalculate();
         } else {
             // Enter zen mode with focused column
-            auto focusedWindow = Desktop::focusState()->window();
-            if (!focusedWindow)
-                return {};
-
-            SP<SScrollingWindowData> WDATA = nullptr;
-            auto                     parent = m_parent.lock();
-            if (parent && parent->space()) {
-                for (auto& wt : parent->space()->targets()) {
-                    auto t = wt.lock();
-                    if (t && t->window() == focusedWindow) {
-                        WDATA = dataFor(t);
-                        break;
-                    }
-                }
-            }
+            auto WDATA = focusedWindowData();
             if (!WDATA)
                 return {};
 
@@ -2054,21 +1826,8 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             return {};
 
         SP<SColumnData> focusedCol;
-        auto focusedWindow = Desktop::focusState()->window();
-        if (focusedWindow) {
-            auto parent = m_parent.lock();
-            if (parent && parent->space()) {
-                for (auto& wt : parent->space()->targets()) {
-                    auto t = wt.lock();
-                    if (t && t->window() == focusedWindow) {
-                        auto WDATA = dataFor(t);
-                        if (WDATA)
-                            focusedCol = WDATA->column.lock();
-                        break;
-                    }
-                }
-            }
-        }
+        if (auto WDATA = focusedWindowData())
+            focusedCol = WDATA->column.lock();
 
         m_overviewActive = false;
         m_overviewClickHook.reset();
@@ -2229,6 +1988,26 @@ SP<SScrollingWindowData> CScrollingLayout::dataFor(SP<Layout::ITarget> t) {
     for (const auto& c : m_scrollingData->columns) {
         for (const auto& d : c->windowDatas) {
             if (d->target.lock() == t)
+                return d;
+        }
+    }
+
+    return nullptr;
+}
+
+SP<SScrollingWindowData> CScrollingLayout::focusedWindowData() {
+    auto focusedWindow = Desktop::focusState()->window();
+    if (!focusedWindow)
+        return nullptr;
+
+    auto parent = m_parent.lock();
+    if (!parent || !parent->space())
+        return nullptr;
+
+    for (const auto& c : m_scrollingData->columns) {
+        for (const auto& d : c->windowDatas) {
+            auto t = d->target.lock();
+            if (t && t->window() == focusedWindow)
                 return d;
         }
     }

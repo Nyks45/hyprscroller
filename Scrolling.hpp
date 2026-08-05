@@ -153,6 +153,10 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
 
     SP<SScrollingWindowData> findBestNeighbor(SP<SScrollingWindowData> pCurrent, SP<SColumnData> pTargetCol);
     SP<SScrollingWindowData> dataFor(SP<Layout::ITarget> t);
+    // Returns the layout data for the currently focused window in this layout's
+    // space, or nullptr if there is none. Replaces a block that was duplicated
+    // across nearly every layoutMsg branch.
+    SP<SScrollingWindowData> focusedWindowData();
 
     void                     focusTargetUpdate(SP<Layout::ITarget> target);
     void                     pushFocusHistory(SP<Layout::ITarget> target);
