@@ -554,11 +554,6 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
         }
 
         currentLeft += ITEM_WIDTH;
-        // Once columns extend past the viewport, nudge subsequent (off-screen)
-        // columns by 1px so adjacent windows never share an exact edge
-        // coordinate (avoids a 1px seam/overlap at integer boundaries).
-        if (currentLeft >= SCROLL_W)
-            currentLeft++;
     }
 }
 
