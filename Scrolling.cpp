@@ -71,25 +71,26 @@ constexpr double OFFSCREEN_COORD = -100000.0;
 
 //
 void SColumnData::add(SP<Layout::ITarget> t) {
-    const size_t n       = windowDatas.size();
-    const float  pref    = std::clamp((float)g_config.window_default_height->value(), MIN_ROW_HEIGHT, 1.0f);
-    const float  newSize = (n == 0 || pref >= 1.0f) ? 1.0f / (float)(n + 1) : pref;
-    const float  scale   = (n == 0 || pref >= 1.0f) ? (float)n / (float)(n + 1) : (1.0f - pref);
-
-    for (auto& wd : windowDatas)
-        wd->windowSize *= scale;
-
-    windowDatas.emplace_back(makeShared<SScrollingWindowData>(t, self.lock(), newSize));
+    add(t, (int)windowDatas.size() - 1);
 }
 
 void SColumnData::add(SP<Layout::ITarget> t, int after) {
-    const size_t n       = windowDatas.size();
-    const float  pref    = std::clamp((float)g_config.window_default_height->value(), MIN_ROW_HEIGHT, 1.0f);
-    const float  newSize = (n == 0 || pref >= 1.0f) ? 1.0f / (float)(n + 1) : pref;
-    const float  scale   = (n == 0 || pref >= 1.0f) ? (float)n / (float)(n + 1) : (1.0f - pref);
+    const size_t n    = windowDatas.size();
+    const float  pref = std::clamp((float)g_config.window_default_height->value(), MIN_ROW_HEIGHT, 1.0f);
+
+    float newSize = 1.0f / (float)(n + 1);
+    if (n > 0 && pref < 1.0f) {
+        // Give the new window `pref`, but never squeeze the others below
+        // MIN_ROW_HEIGHT: repeated multiplication by (1 - pref) used to shrink
+        // the oldest windows towards zero height.
+        newSize = std::max(newSize, std::min(pref, 1.0f - (float)n * MIN_ROW_HEIGHT));
+    }
+
+    const float scale        = 1.0f - newSize;
+    const bool  PROPORTIONAL =std::ranges::all_of(windowDatas, [scale](const auto& wd) { return wd->windowSize * scale >= MIN_ROW_HEIGHT; });
 
     for (auto& wd : windowDatas)
-        wd->windowSize *= scale;
+        wd->windowSize = PROPORTIONAL ? wd->windowSize * scale : scale / (float)n;
 
     windowDatas.insert(windowDatas.begin() + after + 1, makeShared<SScrollingWindowData>(t, self.lock(), newSize));
 }
