@@ -108,20 +108,20 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     CScrollingLayout();
     virtual ~CScrollingLayout();
 
-    virtual void                                          newTarget(SP<Layout::ITarget> target);
-    virtual void                                          movedTarget(SP<Layout::ITarget> target, std::optional<Vector2D> focalPoint = std::nullopt);
-    virtual void                                          removeTarget(SP<Layout::ITarget> target);
+    virtual void                                          newTarget(SP<Layout::ITarget> target) override;
+    virtual void                                          movedTarget(SP<Layout::ITarget> target, std::optional<Vector2D> focalPoint = std::nullopt) override;
+    virtual void                                          removeTarget(SP<Layout::ITarget> target) override;
 
-    virtual void                                          resizeTarget(const Vector2D& delta, SP<Layout::ITarget> target, Layout::eRectCorner corner = Layout::CORNER_NONE);
-    virtual void                                          recalculate(Layout::eRecalculateReason reason = Layout::RECALCULATE_REASON_UNKNOWN);
+    virtual void                                          resizeTarget(const Vector2D& delta, SP<Layout::ITarget> target, Layout::eRectCorner corner = Layout::CORNER_NONE) override;
+    virtual void                                          recalculate(Layout::eRecalculateReason reason = Layout::RECALCULATE_REASON_UNKNOWN) override;
 
-    virtual SP<Layout::ITarget>                           getNextCandidate(SP<Layout::ITarget> old);
+    virtual SP<Layout::ITarget>                           getNextCandidate(SP<Layout::ITarget> old) override;
 
-    virtual Config::ErrorResult                           layoutMsg(const std::string_view& sv);
-    virtual std::optional<Vector2D>                       predictSizeForNewTarget();
+    virtual Config::ErrorResult                           layoutMsg(const std::string_view& sv) override;
+    virtual std::optional<Vector2D>                       predictSizeForNewTarget() override;
 
-    virtual void                                          swapTargets(SP<Layout::ITarget> a, SP<Layout::ITarget> b);
-    virtual void                                          moveTargetInDirection(SP<Layout::ITarget> t, Math::eDirection dir, bool silent);
+    virtual void                                          swapTargets(SP<Layout::ITarget> a, SP<Layout::ITarget> b) override;
+    virtual void                                          moveTargetInDirection(SP<Layout::ITarget> t, Math::eDirection dir, bool silent) override;
 
     CBox                                                  usableArea();
 
