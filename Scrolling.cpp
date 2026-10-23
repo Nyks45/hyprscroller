@@ -324,10 +324,17 @@ void SScrollingLayoutData::fitCol(SP<SColumnData> c) {
     if (!LEFT)
         return;
 
+    const double SCROLL_W   = scrollWidth();
     const double ITEM_WIDTH = colWidth(c, layout->usableArea().w);
     // Not std::clamp: a column wider than the viewport makes lo > hi. Prefer
     // keeping its left edge visible in that case.
-    const double clamped = std::min(std::max((double)leftOffset, *LEFT + ITEM_WIDTH - scrollWidth()), *LEFT);
+    double clamped = std::min(std::max((double)leftOffset, *LEFT + ITEM_WIDTH - SCROLL_W), *LEFT);
+    // Never leave empty space at either side when the columns are wide enough
+    // to fill the viewport (e.g. after switching from center mode). Narrower
+    // content is centred by recalculate() regardless of leftOffset.
+    const double MAX_W = maxWidth();
+    if (MAX_W >= SCROLL_W)
+        clamped = std::clamp(clamped, 0.0, MAX_W - SCROLL_W);
     if (std::abs(clamped - leftOffset) < 0.5)
         return;
     leftOffset = clamped;
@@ -2263,8 +2270,13 @@ void CScrollingLayout::parseConfig() {
         }
     }
 
-    // A config reload re-applies focus_fit_method, dropping any togglefit override.
+    // A config reload re-applies focus_fit_method, dropping any togglefit override,
+    // and re-positions the view so changed fit/width options show immediately.
     m_fitMethodOverride = -1;
+    if (const auto WDATA = focusedWindowData()) {
+        m_scrollingData->centerOrFitCol(WDATA->column.lock());
+        m_scrollingData->recalculate();
+    }
 
     // Register/tear down the hover tick listener according to follow_hover.
     updateHoverTick();
