@@ -1,0 +1,9 @@
+[repository]
+name = "hyprscroller"
+authors = ["Nyks45"]
+
+[hyprscrolling]
+description = "A scrolling (column-based) layout for Hyprland"
+authors = ["Nyks45"]
+output = "hyprscrolling.so"
+build = ["make all"]

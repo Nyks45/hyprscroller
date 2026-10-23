@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.27)
 
 project(hyprscrolling
     DESCRIPTION "hyprscrolling plugin for Hyprland"
-    VERSION 0.1
+    VERSION 2.1
 )
 
 set(CMAKE_CXX_STANDARD 23)
@@ -10,6 +10,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(SRC main.cpp Scrolling.cpp)
 
 add_library(hyprscrolling SHARED ${SRC})
+# Match the Makefile output (hyprscrolling.so, not libhyprscrolling.so).
+set_target_properties(hyprscrolling PROPERTIES PREFIX "")
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(deps REQUIRED IMPORTED_TARGET

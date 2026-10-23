@@ -1,6 +1,6 @@
 Debug/
 Release/
-hyprscroller.so
+build/
 .cache/
 compile_commands.json
 result

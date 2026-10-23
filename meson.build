@@ -1,5 +1,5 @@
 project('hyprscrolling', 'cpp',
-  version: '0.1',
+  version: '2.1',
   default_options: ['buildtype=release'],
 )
 
@@ -25,5 +25,6 @@ shared_module(meson.project_name(), src,
     dependency('wayland-server'),
     dependency('xkbcommon'),
   ],
+  name_prefix: '',
   install: true,
 )
