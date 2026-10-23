@@ -27,7 +27,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_config.fullscreen_on_one_column = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:fullscreen_on_one_column", "fullscreen single column", 0);
     g_config.column_width             = makeShared<Config::Values::CFloatValue>("plugin:hyprscrolling:column_width", "default column width", 0.5);
     g_config.window_default_height    = makeShared<Config::Values::CFloatValue>("plugin:hyprscrolling:window_default_height", "default window height in column mode", 1.0);
-    g_config.focus_fit_method         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:focus_fit_method", "0=center 1=fit", 0);
+    g_config.focus_fit_method         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:focus_fit_method", "0=center 1=fit 2=gap-free center", 0);
     g_config.follow_focus             = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:follow_focus", "follow focus: 0=off 1=on 2=always", 1);
     g_config.follow_min_visible       = makeShared<Config::Values::CFloatValue>("plugin:hyprscrolling:follow_min_visible", "min visible fraction before scrolling (0.0-1.0)", 0.0);
     g_config.follow_debounce_ms       = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:follow_debounce_ms", "follow debounce ms", 0);
@@ -39,8 +39,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_config.collapsed_width          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:collapsed_width", "collapsed column width in px", 30);
     g_config.focus_history            = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:focus_history", "enable focus history", 1);
     g_config.auto_width_rules         = makeShared<Config::Values::CStringValue>("plugin:hyprscrolling:auto_width_rules", "per-class auto widths: class:0.7,class2:0.3", "");
-    g_config.click_edge_left          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:click_edge_left", "left edge exclusion for clicks in px", 90);
-    g_config.click_edge_right         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:click_edge_right", "right edge exclusion for clicks in px", 60);
+    g_config.click_edge_left          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:click_edge_left", "left edge exclusion for clicks in px", 0);
+    g_config.click_edge_right         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:click_edge_right", "right edge exclusion for clicks in px", 0);
     g_config.follow_hover             = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:follow_hover", "follow hover: 0=off 1=on with delay", 0);
     g_config.hover_delay_ms           = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:hover_delay_ms", "hover delay in ms before scroll", 500);
     g_config.overview_animate         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:overview_animate", "animate overview transitions (0=instant, 1=animated)", 0);
@@ -78,7 +78,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     HyprlandAPI::addNotification(PHANDLE, "[hyprscrolling] Initialized successfully!", CHyprColor{0.2, 1.0, 0.2, 1.0}, 3000);
 
-    return {"hyprscrolling", "A plugin to add a scrolling layout to hyprland", "Vaxry", "2.0"};
+    return {"hyprscrolling", "A scrolling (column-based) layout for Hyprland", "Nyks45, based on hyprscrolling by Vaxry", "2.1"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {

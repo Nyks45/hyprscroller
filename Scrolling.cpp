@@ -757,7 +757,8 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
             if (SHOWN_WS != ws)
                 return;
 
-            // exclude clicks on left/right screen edges (caelestia)
+            // Exclude clicks near the left/right screen edges (click_edge_left/right),
+            // e.g. where a shell bar or edge panel sits.
             const auto MON_BOX = PMONITOR->logicalBox();
             if (cursor.x < MON_BOX.x + (double)g_config.click_edge_left->value() ||
                 cursor.x > MON_BOX.x + MON_BOX.w - (double)g_config.click_edge_right->value())
