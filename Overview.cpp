@@ -241,8 +241,12 @@ void COverview::apply(bool instant) {
             continue;
 
         // Start from wherever the window is drawn right now, so retargeting
-        // mid-animation (opening/closing windows, drops) is smooth.
-        m_anims[DATA.get()] = {.from = CBox{WINDOW->positionAnimation()->value(), WINDOW->sizeAnimation()->value()}, .to = SLOT.box};
+        // mid-animation (opening/closing windows, drops) is smooth. Windows
+        // parked off-screen by zen mode would fly in from far away; they
+        // appear at their slot instead.
+        const CBox CURRENT{WINDOW->positionAnimation()->value(), WINDOW->sizeAnimation()->value()};
+        m_anims[DATA.get()] = {.from = DATA->parked ? SLOT.box : CURRENT, .to = SLOT.box};
+        DATA->parked        = false;
     }
 
     if (!m_progress) {

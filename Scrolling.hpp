@@ -8,6 +8,7 @@
 #include <hyprland/src/helpers/memory/Memory.hpp>
 #include <hyprland/src/helpers/signal/Signal.hpp>
 #include <hyprland/src/config/shared/ConfigErrors.hpp>
+#include <hyprland/src/managers/eventLoop/EventLoopTimer.hpp>
 
 class CScrollingLayout;
 class COverview;
@@ -144,11 +145,19 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     CHyprSignalListener      m_configCallback;
     CHyprSignalListener      m_focusCallback;
     CHyprSignalListener      m_buttonCallback;
-    CHyprSignalListener      m_tickCallback;
 
-    CTimer                   m_hoverTimer;
+    // One-shot timer for follow_hover: armed when the pointer settles on a
+    // window, fires after hover_delay_ms (event-loop timer: the animation
+    // tick stops when nothing animates, so it can't drive this).
+    SP<CEventLoopTimer>      m_hoverEventTimer;
     CTimer                   m_debounceTimer;
     WP<Layout::ITarget>      m_hoverTarget;
+    // Window being removed and the neighbour chosen to take focus; Hyprland
+    // asks getNextCandidate() only after removeTarget().
+    WP<Layout::ITarget>      m_removedTarget;
+    WP<Layout::ITarget>      m_removedNext;
+    // Set around focus changes that must not scroll the view (pixel move).
+    bool                     m_suppressFollow = false;
     int                      m_fitMethodOverride = -1;
 
     struct {
@@ -190,10 +199,10 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     // Whether new windows open in the focused column (new_window_placement / placement msg).
     bool                     stackNewWindows() const;
     void                     parseConfig();
-    // Registers the per-tick hover listener only while follow_hover is on,
-    // and tears it down otherwise. Avoids a global tick callback per layout
-    // instance in the common (hover-disabled) case.
-    void                     updateHoverTick();
+    // Creates the follow_hover timer while follow_hover is on and removes it
+    // otherwise.
+    void                     updateHoverTimer();
+    void                     onHoverTimer();
 
     friend struct SScrollingLayoutData;
     friend class COverview;

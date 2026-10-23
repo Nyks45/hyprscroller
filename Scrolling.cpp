@@ -15,6 +15,8 @@
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/devices/IPointer.hpp>
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
+#include <hyprland/src/layout/LayoutManager.hpp>
+#include <hyprland/src/layout/supplementary/DragController.hpp>
 #include <hyprland/src/layout/space/Space.hpp>
 #include <hyprland/src/layout/target/Target.hpp>
 #include <hyprland/src/helpers/MiscFunctions.hpp>
@@ -630,6 +632,13 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
     const CBox   USABLE    = layout->usableArea();
     const auto   WORKAREA  = parent->space()->workArea();
 
+    // Overview: windows sit at their zoomed-out slots (see Overview.cpp);
+    // re-target them so windows opening/closing meanwhile stay in place.
+    if (layout->m_overview && layout->m_overview->active()) {
+        layout->m_overview->apply(forceInstant);
+        return;
+    }
+
     // Zen mode: only show the zen column (or focused column)
     if (layout->m_zenMode) {
         SP<SColumnData> zenCol = layout->m_zenColumn;
@@ -646,9 +655,13 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
             for (const auto& COL : columns) {
                 if (COL == zenCol)
                     continue;
-                const double ITEM_WIDTH = colWidth(COL, USABLE.w);
-                for (const auto& WDATA : COL->windowDatas) {
-                    WDATA->layoutBox = CBox{OFFSCREEN_COORD, OFFSCREEN_COORD, ITEM_WIDTH, WDATA->windowSize * USABLE.h};
+                // Same sizes as in the normal layout, so parking never resizes clients.
+                const double        ITEM_WIDTH = colWidth(COL, USABLE.w);
+                std::vector<double> heights;
+                rowHeights(COL, USABLE.h, heights);
+                for (size_t i = 0; i < COL->windowDatas.size(); ++i) {
+                    const auto& WDATA = COL->windowDatas[i];
+                    WDATA->layoutBox  = CBox{OFFSCREEN_COORD, OFFSCREEN_COORD, ITEM_WIDTH, heights[i]};
                     auto target = WDATA->target.lock();
                     if (target) {
                         CBox box = WDATA->layoutBox;
@@ -661,13 +674,6 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
             }
             return;
         }
-    }
-
-    // Overview: windows sit at their zoomed-out slots (see Overview.cpp);
-    // re-target them so windows opening/closing meanwhile stay in place.
-    if (layout->m_overview && layout->m_overview->active()) {
-        layout->m_overview->apply(forceInstant);
-        return;
     }
 
     // Single pass: pinned widths + scrollable total. colWidth() applies
@@ -779,10 +785,9 @@ CScrollingLayout::CScrollingLayout() {
 }
 
 CScrollingLayout::~CScrollingLayout() {
-    m_configCallback.reset();
-    m_focusCallback.reset();
-    m_buttonCallback.reset();
-    m_tickCallback.reset();
+    // The event loop holds the timer, whose callback captures this.
+    if (m_hoverEventTimer)
+        g_pEventLoopManager->removeTimer(m_hoverEventTimer);
 }
 
 float CScrollingLayout::defaultColumnWidth() {
@@ -840,31 +845,35 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                 if (!WDATA)
                     break;
 
+                // The overview positions windows itself (and focuses the
+                // dragged one); don't sync zen or scroll underneath it. Also
+                // skipped for focus changes that must not move the view.
+                if (m_overview->active() || m_suppressFollow)
+                    return;
+
                 // Applies to every focus reason, including clicks and
                 // external dispatchers, and regardless of follow_focus.
                 syncZenColumn(WDATA->column.lock());
-
-                // The overview positions windows itself (and focuses the
-                // dragged one); don't scroll/re-layout underneath it.
-                if (m_overview->active())
-                    return;
 
                 if (!g_config.follow_focus->value())
                     return;
 
                 if (reason == Desktop::FOCUS_REASON_FFM) {
-                    // Always check edge exclusion for hover/always-follow
+                    // Hover only scrolls with follow_focus = 2 (immediately) or
+                    // follow_hover (after hover_delay_ms); skip the shell hit
+                    // test otherwise.
+                    const bool IMMEDIATE = g_config.follow_focus->value() == 2;
+                    if (!IMMEDIATE && !g_config.follow_hover->value())
+                        return;
+
                     if (const auto PMONITOR = hyprscrolling_compat::monitorFromCursor();
                         PMONITOR && pointerBlocked(PMONITOR, g_pInputManager->getMouseCoordsInternal()))
                         return;
 
-                    if (g_config.follow_focus->value() == 2) {
-                        // follow_focus=2: immediate scroll on hover, fall through to scroll logic
-                    } else {
-                        if (!g_config.follow_hover->value())
-                            return;
-                        m_hoverTimer.reset();
+                    if (!IMMEDIATE) {
                         m_hoverTarget = t;
+                        if (m_hoverEventTimer)
+                            m_hoverEventTimer->updateTimeout(std::chrono::milliseconds(std::max<int64_t>(0, g_config.hover_delay_ms->value())));
                         return;
                     }
                 }
@@ -962,7 +971,7 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
         });
     }
 
-    updateHoverTick();
+    updateHoverTimer();
 
     // Try to find the focused target for determining placement
     SP<Layout::ITarget> droppingOn = nullptr;
@@ -1098,8 +1107,12 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
 
     // Determine next focus before removal so we can pre-scroll to it.
     // This ensures the focus callback's centerOrFitCol is a no-op and
-    // doesn't restart the layout animation mid-flight.
-    auto nextFocus = getNextCandidate(target);
+    // doesn't restart the layout animation mid-flight. Hyprland asks
+    // getNextCandidate() only after removal (when the window is gone from
+    // the layout), so remember the answer for it.
+    auto nextFocus  = getNextCandidate(target);
+    m_removedTarget = target;
+    m_removedNext   = nextFocus;
 
     // Measure before removal: colWidth depends on the column count.
     const bool   WAS_LAST = !m_scrollingData->next(COL);
@@ -1116,13 +1129,12 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
     }
 
     // clamp before recalculate so windows don't get positioned with stale offset
-    const auto   USABLE    = usableArea();
-    const double SCROLL_W  = USABLE.w - m_scrollingData->pinnedWidthLeft() - m_scrollingData->pinnedWidthRight();
-    m_scrollingData->leftOffset = std::clamp((double)m_scrollingData->leftOffset, 0.0,
-        std::max(m_scrollingData->maxWidth() - SCROLL_W, 0.0));
+    m_scrollingData->leftOffset =
+        std::clamp((double)m_scrollingData->leftOffset, 0.0, std::max(m_scrollingData->maxWidth() - m_scrollingData->scrollWidth(), 0.0));
 
     // Pre-scroll to the next focus so the focus callback computes the same
-    // leftOffset and skips its recalculate — one animation instead of two.
+    // leftOffset: its recalculate then sets identical goals and the
+    // animation started here isn't restarted.
     if (nextFocus) {
         auto NDATA = dataFor(nextFocus);
         if (NDATA) {
@@ -1239,13 +1251,21 @@ void CScrollingLayout::resizeTarget(const Vector2D& delta, SP<Layout::ITarget> t
         }
     }
 
-    m_scrollingData->recalculate(true);
+    // Follow the pointer instantly during an interactive (mouse) resize;
+    // keyboard resizes animate like everything else instead of snapping
+    // every animation in progress on the workspace.
+    m_scrollingData->recalculate(g_layoutManager->dragController()->target() == target);
 }
 
 SP<Layout::ITarget> CScrollingLayout::getNextCandidate(SP<Layout::ITarget> old) {
     auto DATA = dataFor(old);
-    if (!DATA)
+    if (!DATA) {
+        // Asked after removeTarget(): use the neighbour chosen there instead
+        // of letting Hyprland fall back to the newest window.
+        if (old && old == m_removedTarget.lock())
+            return m_removedNext.lock();
         return nullptr;
+    }
 
     auto COL = DATA->column.lock();
     if (!COL)
@@ -1303,7 +1323,7 @@ void CScrollingLayout::focusTargetUpdate(SP<Layout::ITarget> target) {
                 m_scrollingData->fitRow(col, WDATA);
                 m_scrollingData->recalculate();
             }
-            if (g_config.center_active_column->value()) {
+            if (g_config.center_active_column->value() && !m_suppressFollow) {
                 m_scrollingData->centerOrFitCol(col);
                 m_scrollingData->recalculate();
             }
@@ -1415,8 +1435,11 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         m_scrollingData->leftOffset -= *PLUSMINUS;
         m_scrollingData->recalculate();
 
+        // Focus what's now in the middle without snapping the view to it:
+        // the focus callback would re-centre/fit and undo the pixel scroll.
         const auto ATCENTER = m_scrollingData->atCenter();
-
+        m_suppressFollow    = true;
+        CScopeGuard restore([this] { m_suppressFollow = false; });
         focusTargetUpdate(ATCENTER ? (*ATCENTER->windowDatas.begin())->target.lock() : nullptr);
     } else if (ARGS[0] == "colresize") {
         auto WDATA = focusedWindowData();
@@ -1528,7 +1551,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             }
             WDATA->windowSize = targetSize;
             m_scrollingData->fitRow(COL, WDATA);
-            m_scrollingData->recalculate(true);
+            m_scrollingData->recalculate();
         };
 
         if (ARGS[1] == "+conf") {
@@ -2073,7 +2096,59 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
 }
 
 std::optional<Vector2D> CScrollingLayout::predictSizeForNewTarget() {
-    return std::nullopt;
+    // Tell new clients their size up front, so they don't map at their own
+    // preferred size and visibly snap into the column right after.
+    const CBox USABLE = usableArea();
+    if (USABLE.w <= 0 || USABLE.h <= 0)
+        return std::nullopt;
+
+    const auto&  DATA    = m_scrollingData;
+    const double PEEK    = DATA->peekWidth(USABLE.w);
+    const auto   FOCUSED = focusedWindowData();
+    const auto   COL     = FOCUSED ? FOCUSED->column.lock() : nullptr;
+
+    double width = 0, height = USABLE.h;
+    if (COL && !COL->collapsed && stackNewWindows()) {
+        // Joins the focused column.
+        const size_t N = COL->windowDatas.size() + 1;
+        width          = DATA->colWidth(COL, USABLE.w);
+        if (g_config.column_scroll->value()) {
+            const double PEEK_V = std::clamp((double)g_config.peek_width->value(), 0.0, USABLE.h / 4.0);
+            height              = std::min(USABLE.h, std::clamp((double)g_config.window_default_height->value(), (double)MIN_ROW_HEIGHT, 1.0) * (USABLE.h - 2 * PEEK_V));
+        } else
+            height = USABLE.h / (double)N;
+    } else if (DATA->columns.empty() && g_config.fullscreen_on_one_column->value())
+        width = USABLE.w;
+    else {
+        // A new column, including stretch_to_fill with the column added.
+        double flex = (USABLE.w - 2 * PEEK) * defaultColumnWidth(), fixed = 0, pinned = 0;
+        double total = flex;
+        for (const auto& C : DATA->columns) {
+            if (C->pinned != PIN_NONE)
+                pinned += DATA->colWidth(C, USABLE.w);
+            else if (C->collapsed)
+                fixed += g_config.collapsed_width->value();
+            else
+                total += (USABLE.w - 2 * PEEK) * C->columnWidth;
+        }
+        const double SCROLL_W = USABLE.w - pinned;
+        if (g_config.stretch_to_fill->value() && total + fixed < SCROLL_W && total > 0)
+            flex *= (SCROLL_W - fixed) / total;
+        width = flex;
+    }
+
+    // The window box is the layout box minus the inner gaps facing neighbours
+    // (outer gaps are already excluded from the usable area).
+    static auto PGAPSINDATA = CConfigValue<Config::IComplexConfigValue>("general:gaps_in");
+    const auto* GAPS        = dynamic_cast<Config::CCssGapData*>(PGAPSINDATA.ptr());
+    if (GAPS) {
+        if (width < USABLE.w - 0.5)
+            width -= GAPS->m_left + GAPS->m_right;
+        if (height < USABLE.h - 0.5)
+            height -= GAPS->m_top + GAPS->m_bottom;
+    }
+
+    return Vector2D{std::max(1.0, std::round(width)), std::max(1.0, std::round(height))};
 }
 
 void CScrollingLayout::swapTargets(SP<Layout::ITarget> a, SP<Layout::ITarget> b) {
@@ -2302,48 +2377,44 @@ int CScrollingLayout::effectiveFitMethod() const {
     return m_fitMethodOverride >= 0 ? m_fitMethodOverride : (int)g_config.focus_fit_method->value();
 }
 
-void CScrollingLayout::updateHoverTick() {
+void CScrollingLayout::updateHoverTimer() {
     if (!g_config.follow_hover->value()) {
-        // Feature disabled: don't keep a global tick listener around.
-        m_tickCallback.reset();
+        if (m_hoverEventTimer)
+            g_pEventLoopManager->removeTimer(m_hoverEventTimer);
+        m_hoverEventTimer.reset();
         m_hoverTarget.reset();
         return;
     }
 
-    if (m_tickCallback)
+    if (m_hoverEventTimer)
         return;
 
-    m_tickCallback = Event::bus()->m_events.tick.listen([this]() {
-        auto target = m_hoverTarget.lock();
-        if (!target || m_hoverTimer.getMillis() < (double)g_config.hover_delay_ms->value())
-            return;
+    m_hoverEventTimer = makeShared<CEventLoopTimer>(std::nullopt, [this](SP<CEventLoopTimer>, void*) { onHoverTimer(); }, nullptr);
+    g_pEventLoopManager->addTimer(m_hoverEventTimer);
+}
 
-        // verify cursor is still over this window and not over the shell / edge margins
-        Vector2D cursor = g_pInputManager->getMouseCoordsInternal();
-        auto PMONITOR = hyprscrolling_compat::monitorFromCursor();
-        if (!PMONITOR || pointerBlocked(PMONITOR, cursor))
-            return;
+void CScrollingLayout::onHoverTimer() {
+    const auto TARGET = m_hoverTarget.lock();
+    m_hoverTarget.reset();
+    if (!TARGET)
+        return;
 
-        auto PWIN = target->window();
-        if (!PWIN)
-            return;
-        CBox box = {PWIN->positionAnimation()->value().x, PWIN->positionAnimation()->value().y, PWIN->sizeAnimation()->value().x, PWIN->sizeAnimation()->value().y};
-        if (cursor.x < box.x || cursor.x > box.x + box.w || cursor.y < box.y || cursor.y > box.y + box.h)
-            return;
+    // Still over that window, and not over the shell / edge margins?
+    const Vector2D CURSOR   = g_pInputManager->getMouseCoordsInternal();
+    const auto     PMONITOR = hyprscrolling_compat::monitorFromCursor();
+    const auto     PWIN     = TARGET->window();
+    if (!PMONITOR || !PWIN || pointerBlocked(PMONITOR, CURSOR))
+        return;
+    if (!CBox{PWIN->positionAnimation()->value(), PWIN->sizeAnimation()->value()}.containsPoint(CURSOR))
+        return;
 
-        auto WDATA = dataFor(target);
-        if (!WDATA)
-            return;
-        auto COL = WDATA->column.lock();
-        if (!COL)
-            return;
+    const auto WDATA = dataFor(TARGET);
+    const auto COL   = WDATA ? WDATA->column.lock() : nullptr;
+    if (!COL)
+        return;
 
-        m_scrollingData->centerOrFitCol(COL);
-        m_scrollingData->recalculate();
-
-        m_hoverTimer.reset();
-        m_hoverTarget.reset();
-    });
+    m_scrollingData->centerOrFitCol(COL);
+    m_scrollingData->recalculate();
 }
 
 void CScrollingLayout::parseConfig() {
@@ -2424,6 +2495,6 @@ void CScrollingLayout::parseConfig() {
         m_scrollingData->recalculate();
     }
 
-    // Register/tear down the hover tick listener according to follow_hover.
-    updateHoverTick();
+    // Create/remove the hover timer according to follow_hover.
+    updateHoverTimer();
 }
