@@ -256,86 +256,84 @@ SP<SColumnData> SScrollingLayoutData::prev(SP<SColumnData> c) {
     return nullptr;
 }
 
-void SScrollingLayoutData::centerCol(SP<SColumnData> c) {
-    if (!c)
-        return;
+double SScrollingLayoutData::colWidth(const SP<SColumnData>& c, double usableW) {
+    if (c->collapsed)
+        return g_config.collapsed_width->value();
+    if (c->pinned == PIN_NONE && g_config.fullscreen_on_one_column->value() && columns.size() == 1)
+        return usableW;
+    return usableW * c->columnWidth;
+}
 
-    const auto   USABLE       = layout->usableArea();
-    const double COLLAPSED_PX = g_config.collapsed_width->value();
-    double       currentLeft  = 0;
+double SScrollingLayoutData::scrollWidth() {
+    return layout->usableArea().w - pinnedWidthLeft() - pinnedWidthRight();
+}
+
+std::optional<double> SScrollingLayoutData::scrollLeft(const SP<SColumnData>& c) {
+    if (!c || c->pinned != PIN_NONE)
+        return std::nullopt;
+
+    const double USABLE_W    = layout->usableArea().w;
+    double       currentLeft = 0;
 
     for (const auto& COL : columns) {
-        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX :
-            (g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth);
-
-        if (COL != c)
-            currentLeft += ITEM_WIDTH;
-        else {
-            const double target = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.0;
-            if (std::abs(target - leftOffset) < 0.5)
-                return;
-            leftOffset = target;
-            return;
-        }
+        if (COL->pinned != PIN_NONE)
+            continue;
+        if (COL == c)
+            return currentLeft;
+        currentLeft += colWidth(COL, USABLE_W);
     }
+
+    return std::nullopt;
+}
+
+// Pinned columns live outside the scrollable viewport, so centring/fitting
+// works in scroll space: column positions skip pinned columns, and the
+// viewport is the usable width minus pinned widths (matches recalculate()).
+void SScrollingLayoutData::centerCol(SP<SColumnData> c) {
+    const auto LEFT = scrollLeft(c);
+    if (!LEFT)
+        return;
+
+    const double ITEM_WIDTH = colWidth(c, layout->usableArea().w);
+    const double target     = *LEFT - (scrollWidth() - ITEM_WIDTH) / 2.0;
+    if (std::abs(target - leftOffset) < 0.5)
+        return;
+    leftOffset = target;
 }
 
 void SScrollingLayoutData::fitCol(SP<SColumnData> c) {
-    if (!c)
+    const auto LEFT = scrollLeft(c);
+    if (!LEFT)
         return;
 
-    const auto   USABLE       = layout->usableArea();
-    const double COLLAPSED_PX = g_config.collapsed_width->value();
-    double       currentLeft  = 0;
-
-    for (const auto& COL : columns) {
-        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX :
-            (g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth);
-
-        if (COL != c)
-            currentLeft += ITEM_WIDTH;
-        else {
-            const double clamped = std::clamp((double)leftOffset, currentLeft - USABLE.w + ITEM_WIDTH, currentLeft);
-            if (std::abs(clamped - leftOffset) < 0.5)
-                return;
-            leftOffset = clamped;
-            return;
-        }
-    }
+    const double ITEM_WIDTH = colWidth(c, layout->usableArea().w);
+    // Not std::clamp: a column wider than the viewport makes lo > hi. Prefer
+    // keeping its left edge visible in that case.
+    const double clamped = std::min(std::max((double)leftOffset, *LEFT + ITEM_WIDTH - scrollWidth()), *LEFT);
+    if (std::abs(clamped - leftOffset) < 0.5)
+        return;
+    leftOffset = clamped;
 }
 
 void SScrollingLayoutData::fitCol2(SP<SColumnData> c) {
-    if (!c)
+    const auto LEFT = scrollLeft(c);
+    if (!LEFT)
         return;
 
-    const auto   USABLE       = layout->usableArea();
-    const double COLLAPSED_PX = g_config.collapsed_width->value();
-    double       currentLeft  = 0;
-    double       maxExtent    = maxWidth();
+    const double SCROLL_W    = scrollWidth();
+    const double ITEM_WIDTH  = colWidth(c, layout->usableArea().w);
+    const double maxExtent   = maxWidth();
+    const double idealOffset = *LEFT - (SCROLL_W - ITEM_WIDTH) / 2.0;
 
-    for (const auto& COL : columns) {
-        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX :
-            (g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth);
+    double target;
+    if (maxExtent < SCROLL_W)
+        target = (maxExtent - SCROLL_W) / 2.0;
+    else
+        target = std::clamp(idealOffset, 0.0, maxExtent - SCROLL_W);
 
-        if (COL != c)
-            currentLeft += ITEM_WIDTH;
-        else {
-            double idealOffset = currentLeft - (USABLE.w - ITEM_WIDTH) / 2.0;
-
-            double target;
-            if (maxExtent < USABLE.w) {
-                target = (maxExtent - USABLE.w) / 2.0;
-            } else {
-                double lo = 0.0;
-                double hi = maxExtent - USABLE.w;
-                target = std::clamp(idealOffset, lo, std::max(lo, hi));
-            }
-            if (std::abs(target - leftOffset) < 0.5)
-                return;
-            leftOffset = target;
-            return;
-        }
-    }
+    if (std::abs(target - leftOffset) < 0.5)
+        return;
+    leftOffset = target;
 }
 
 void SScrollingLayoutData::centerOrFitCol(SP<SColumnData> c) {
@@ -352,19 +350,15 @@ void SScrollingLayoutData::centerOrFitCol(SP<SColumnData> c) {
 }
 
 SP<SColumnData> SScrollingLayoutData::atCenter() {
-    double       currentLeft  = 0;
-    const auto   USABLE       = layout->usableArea();
-    const double COLLAPSED_PX = g_config.collapsed_width->value();
-    const double threshold    = leftOffset + USABLE.w / 2.0 - 2;
+    double       currentLeft = 0;
+    const double USABLE_W    = layout->usableArea().w;
+    const double threshold   = leftOffset + scrollWidth() / 2.0 - 2;
 
     for (const auto& COL : columns) {
         if (COL->pinned != PIN_NONE)
             continue;
 
-        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX :
-            (g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth);
-
-        currentLeft += ITEM_WIDTH;
+        currentLeft += colWidth(COL, USABLE_W);
 
         if (currentLeft >= threshold)
             return COL;
@@ -569,18 +563,13 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
 }
 
 double SScrollingLayoutData::maxWidth() {
-    double            currentLeft  = 0;
-    const auto        USABLE       = layout->usableArea();
-    const double      COLLAPSED_PX = g_config.collapsed_width->value();
+    double       currentLeft = 0;
+    const double USABLE_W    = layout->usableArea().w;
 
     for (const auto& COL : columns) {
         if (COL->pinned != PIN_NONE)
             continue;
-        if (COL->collapsed) {
-            currentLeft += COLLAPSED_PX;
-        } else {
-            currentLeft += g_config.fullscreen_on_one_column->value() && columns.size() == 1 ? USABLE.w : USABLE.w * COL->columnWidth;
-        }
+        currentLeft += colWidth(COL, USABLE_W);
     }
 
     return currentLeft;
@@ -615,24 +604,11 @@ bool SScrollingLayoutData::visible(SP<SColumnData> c) {
     if (c->pinned != PIN_NONE)
         return true;
 
-    const auto   USABLE       = layout->usableArea();
-    const double COLLAPSED_PX = g_config.collapsed_width->value();
-    const double SCROLL_W     = USABLE.w - pinnedWidthLeft() - pinnedWidthRight();
-    double       totalLeft    = 0;
+    const auto LEFT = scrollLeft(c);
+    if (!LEFT)
+        return false;
 
-    for (const auto& col : columns) {
-        if (col->pinned != PIN_NONE)
-            continue;
-
-        const double colWidth = col->collapsed ? COLLAPSED_PX : col->columnWidth * USABLE.w;
-
-        if (col == c)
-            return totalLeft < leftOffset + SCROLL_W && leftOffset < totalLeft + colWidth;
-
-        totalLeft += colWidth;
-    }
-
-    return false;
+    return *LEFT < leftOffset + scrollWidth() && leftOffset < *LEFT + colWidth(c, layout->usableArea().w);
 }
 
 // ======================

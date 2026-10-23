@@ -79,6 +79,12 @@ struct SScrollingLayoutData {
     double                       maxWidth();
     double                       pinnedWidthLeft();
     double                       pinnedWidthRight();
+    // Rendered width of a column in px (collapsed / fullscreen-on-one aware).
+    double                       colWidth(const SP<SColumnData>& c, double usableW);
+    // Width of the scrollable viewport, i.e. usable width minus pinned columns.
+    double                       scrollWidth();
+    // Left edge of an unpinned column in scroll space; nullopt if pinned/absent.
+    std::optional<double>        scrollLeft(const SP<SColumnData>& c);
     SP<SColumnData>              next(SP<SColumnData> c);
     SP<SColumnData>              prev(SP<SColumnData> c);
     SP<SColumnData>              atCenter();
