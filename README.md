@@ -159,7 +159,7 @@ Send commands with the layout message dispatcher: `hl.dsp.layout("<message>")` i
 
 | Message | Description |
 |---|---|
-| `focus l/r/u/d` | Move focus in direction (`t`/`b` are aliases for `u`/`d`). Wraps at the edges when `focus_wrap` is on |
+| `focus l/r/u/d [nowrap]` | Move focus in direction (`t`/`b` are aliases for `u`/`d`). Wraps at the edges when `focus_wrap` is on, unless `nowrap` is given (useful for scroll-wheel binds) |
 | `focusback` | Go back in focus history |
 | `focusfwd` | Go forward in focus history |
 
@@ -233,6 +233,13 @@ hl.bind("SUPER + equal", lm("colresize +0.05"))
 hl.bind("SUPER + minus", lm("colresize -0.05"))
 hl.bind("SUPER + bracketright", lm("colresize +conf"))
 hl.bind("SUPER + bracketleft", lm("colresize -conf"))
+
+-- niri-style mouse wheel: Super+wheel moves through the windows of the column,
+-- Super+Shift+wheel moves between columns (no wrap-around at the ends)
+hl.bind("SUPER + mouse_down", lm("focus d nowrap"))
+hl.bind("SUPER + mouse_up", lm("focus u nowrap"))
+hl.bind("SUPER + SHIFT + mouse_down", lm("focus r nowrap"))
+hl.bind("SUPER + SHIFT + mouse_up", lm("focus l nowrap"))
 
 -- Fit, zen, overview
 hl.bind("SUPER + F", lm("fit active"))

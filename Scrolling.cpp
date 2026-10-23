@@ -1632,16 +1632,19 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
     } else if (ARGS[0] == "focus") {
         auto WDATA = focusedWindowData();
 
-
         if (!WDATA || ARGS[1].empty())
             return {};
+
+        // "focus <dir> nowrap" stops at the edges regardless of focus_wrap
+        // (wrapping is jarring on a scroll wheel).
+        const bool WRAP = g_config.focus_wrap->value() && ARGS[2] != "nowrap";
 
         switch (ARGS[1][0]) {
             case 'u':
             case 't': {
                 auto PREV = WDATA->column.lock()->prev(WDATA);
                 if (!PREV) {
-                    if (!g_config.focus_wrap->value())
+                    if (!WRAP)
                         break;
                     PREV = WDATA->column.lock()->windowDatas.back();
                 }
@@ -1657,7 +1660,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             case 'd': {
                 auto NEXT = WDATA->column.lock()->next(WDATA);
                 if (!NEXT) {
-                    if (!g_config.focus_wrap->value())
+                    if (!WRAP)
                         break;
                     NEXT = WDATA->column.lock()->windowDatas.front();
                 }
@@ -1673,7 +1676,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 auto COL  = WDATA->column.lock();
                 auto PREV = m_scrollingData->prev(COL);
                 if (!PREV) {
-                    if (!g_config.focus_wrap->value()) {
+                    if (!WRAP) {
                         centerOrFit(m_scrollingData, COL);
                         m_scrollingData->recalculate();
                         auto w = WDATA->target.lock() ? WDATA->target.lock()->window() : nullptr;
@@ -1700,7 +1703,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 auto COL  = WDATA->column.lock();
                 auto NEXT = m_scrollingData->next(COL);
                 if (!NEXT) {
-                    if (!g_config.focus_wrap->value()) {
+                    if (!WRAP) {
                         centerOrFit(m_scrollingData, COL);
                         m_scrollingData->recalculate();
                         auto w = WDATA->target.lock() ? WDATA->target.lock()->window() : nullptr;
