@@ -751,8 +751,10 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
 
             // Only react if this layout's workspace is the one currently shown
             // on the monitor under the cursor. Without this, a hidden
-            // same-monitor workspace's instance could process the click.
-            if (PMONITOR->m_activeWorkspace != ws)
+            // same-monitor workspace's instance could process the click. An
+            // open special workspace is shown on top of the regular one.
+            const auto SHOWN_WS = PMONITOR->m_activeSpecialWorkspace ? PMONITOR->m_activeSpecialWorkspace : PMONITOR->m_activeWorkspace;
+            if (SHOWN_WS != ws)
                 return;
 
             // exclude clicks on left/right screen edges (caelestia)
@@ -948,7 +950,12 @@ void CScrollingLayout::resizeTarget(const Vector2D& delta, SP<Layout::ITarget> t
     if (!DATA || !DATA->column.lock())
         return;
 
-    const auto USABLE        = usableArea();
+    const auto USABLE = usableArea();
+    // usableArea() is empty when the workspace has no monitor; dividing by it
+    // would turn column widths into NaN.
+    if (USABLE.w <= 0 || USABLE.h <= 0)
+        return;
+
     const auto DELTA_AS_PERC = delta / USABLE.size();
 
     const auto CURR_COLUMN = DATA->column.lock();
@@ -1888,8 +1895,10 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                     }
                 }
 
+                // Don't reset m_overviewClickHook from inside its own callback;
+                // the listener goes inert via !m_overviewActive and is
+                // replaced or reset the next time overview is toggled.
                 m_overviewActive = false;
-                m_overviewClickHook.reset();
 
                 if (clickedCol)
                     m_scrollingData->centerOrFitCol(clickedCol);
@@ -2252,6 +2261,9 @@ void CScrollingLayout::parseConfig() {
             } catch (...) {}
         }
     }
+
+    // A config reload re-applies focus_fit_method, dropping any togglefit override.
+    m_fitMethodOverride = -1;
 
     // Register/tear down the hover tick listener according to follow_hover.
     updateHoverTick();
