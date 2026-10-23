@@ -844,6 +844,11 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                 // external dispatchers, and regardless of follow_focus.
                 syncZenColumn(WDATA->column.lock());
 
+                // The overview positions windows itself (and focuses the
+                // dragged one); don't scroll/re-layout underneath it.
+                if (m_overview->active())
+                    return;
+
                 if (!g_config.follow_focus->value())
                     return;
 

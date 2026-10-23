@@ -446,11 +446,14 @@ void COverview::open() {
         if (m_pressed && !m_dragMoved && pos.distance(m_pressPos) > OV_DRAG_THRESHOLD && m_dragging.lock()) {
             m_dragMoved = true;
             // Lift the dragged window out of the animation and above its
-            // neighbours.
+            // neighbours. Tiled windows have no z-order of their own; the
+            // renderer draws the focused one last, so focus it. Keyboard input
+            // belongs to the overview meanwhile, so the client sees nothing
+            // but the focus change, and the dropped window ends up focused.
             if (const auto DATA = m_dragging.lock()) {
                 m_anims.erase(DATA.get());
                 if (const auto WINDOW = windowOf(DATA))
-                    (void)Config::Actions::alterZOrder("top", WINDOW);
+                    Desktop::focusState()->rawWindowFocus(WINDOW, Desktop::FOCUS_REASON_OTHER);
             }
             g_pHyprRenderer->setCursorFromName("grabbing", true);
         }
