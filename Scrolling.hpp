@@ -81,8 +81,12 @@ struct SScrollingLayoutData {
     double                       maxWidth();
     double                       pinnedWidthLeft();
     double                       pinnedWidthRight();
-    // Rendered width of a column in px (collapsed / fullscreen-on-one aware).
+    // Rendered width of a column in px (collapsed / fullscreen-on-one / peek / fill aware).
     double                       colWidth(const SP<SColumnData>& c, double usableW);
+    // peek_width clamped to a sane range for this usable width.
+    double                       peekWidth(double usableW);
+    // stretch_to_fill factor for scrollable columns (1 when not stretching).
+    double                       fillScale(double usableW);
     // Width of the scrollable viewport, i.e. usable width minus pinned columns.
     double                       scrollWidth();
     // Left edge of an unpinned column in scroll space; nullopt if pinned/absent.

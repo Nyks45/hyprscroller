@@ -44,6 +44,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_config.follow_hover             = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:follow_hover", "follow hover: 0=off 1=on with delay", 0);
     g_config.hover_delay_ms           = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:hover_delay_ms", "hover delay in ms before scroll", 500);
     g_config.overview_animate         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:overview_animate", "animate overview transitions (0=instant, 1=animated)", 0);
+    g_config.peek_width               = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:peek_width", "px of neighbouring columns kept visible at the sides", 0);
+    g_config.stretch_to_fill          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:stretch_to_fill", "stretch columns to fill the screen when they are narrower than it", 0);
 
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.fullscreen_on_one_column);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.column_width);
@@ -65,6 +67,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.follow_hover);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.hover_delay_ms);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.overview_animate);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_config.peek_width);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_config.stretch_to_fill);
 
     bool success = HyprlandAPI::addTiledAlgo(PHANDLE, "hyprscrolling", &typeid(CScrollingLayout), []() -> UP<Layout::ITiledAlgorithm> {
         return makeUnique<CScrollingLayout>();

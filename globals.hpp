@@ -30,6 +30,8 @@ struct SConfig {
     SP<Config::Values::CIntValue>    follow_hover;
     SP<Config::Values::CIntValue>    hover_delay_ms;
     SP<Config::Values::CIntValue>    overview_animate;
+    SP<Config::Values::CIntValue>    peek_width;
+    SP<Config::Values::CIntValue>    stretch_to_fill;
 };
 
 inline SConfig g_config;

@@ -274,12 +274,49 @@ SP<SColumnData> SScrollingLayoutData::prev(SP<SColumnData> c) {
     return nullptr;
 }
 
+double SScrollingLayoutData::peekWidth(double usableW) {
+    return std::clamp((double)g_config.peek_width->value(), 0.0, usableW / 4.0);
+}
+
+// Scrollable column widths are fractions of the usable width minus a peek
+// strip on each side, so that e.g. two 0.5 columns leave the edges of their
+// neighbours visible.
+static double flexWidth(const SP<SColumnData>& c, double usableW, double peek) {
+    return (usableW - 2.0 * peek) * c->columnWidth;
+}
+
+double SScrollingLayoutData::fillScale(double usableW) {
+    if (!g_config.stretch_to_fill->value())
+        return 1.0;
+
+    const double PEEK  = peekWidth(usableW);
+    double       flex  = 0;
+    double       fixed = 0;
+    double       pinned = 0;
+    for (const auto& COL : columns) {
+        if (COL->pinned != PIN_NONE)
+            pinned += COL->collapsed ? g_config.collapsed_width->value() : usableW * COL->columnWidth;
+        else if (COL->collapsed)
+            fixed += g_config.collapsed_width->value();
+        else
+            flex += flexWidth(COL, usableW, PEEK);
+    }
+
+    // Only stretch when the columns don't fill the viewport on their own.
+    const double SCROLL_W = usableW - pinned;
+    if (flex <= 0 || flex + fixed >= SCROLL_W)
+        return 1.0;
+    return (SCROLL_W - fixed) / flex;
+}
+
 double SScrollingLayoutData::colWidth(const SP<SColumnData>& c, double usableW) {
     if (c->collapsed)
         return g_config.collapsed_width->value();
-    if (c->pinned == PIN_NONE && g_config.fullscreen_on_one_column->value() && columns.size() == 1)
+    if (c->pinned != PIN_NONE)
+        return usableW * c->columnWidth;
+    if (g_config.fullscreen_on_one_column->value() && columns.size() == 1)
         return usableW;
-    return usableW * c->columnWidth;
+    return flexWidth(c, usableW, peekWidth(usableW)) * fillScale(usableW);
 }
 
 double SScrollingLayoutData::scrollWidth() {
@@ -324,15 +361,30 @@ void SScrollingLayoutData::fitCol(SP<SColumnData> c) {
     if (!LEFT)
         return;
 
+    const double USABLE_W   = layout->usableArea().w;
     const double SCROLL_W   = scrollWidth();
-    const double ITEM_WIDTH = colWidth(c, layout->usableArea().w);
-    // Not std::clamp: a column wider than the viewport makes lo > hi. Prefer
-    // keeping its left edge visible in that case.
-    double clamped = std::min(std::max((double)leftOffset, *LEFT + ITEM_WIDTH - SCROLL_W), *LEFT);
+    const double ITEM_WIDTH = colWidth(c, USABLE_W);
+    const double MAX_W      = maxWidth();
+    const double PEEK       = peekWidth(USABLE_W);
+
+    // Keep the focused column in view, plus a peek strip of whatever lies
+    // beyond it on each side, so neighbours stay visible and reachable.
+    const double PEEK_L = *LEFT > 0.5 ? PEEK : 0.0;
+    const double PEEK_R = *LEFT + ITEM_WIDTH < MAX_W - 0.5 ? PEEK : 0.0;
+    const double LO     = *LEFT + ITEM_WIDTH + PEEK_R - SCROLL_W;
+    const double HI     = *LEFT - PEEK_L;
+
+    double clamped;
+    if (LO <= HI)
+        clamped = std::clamp((double)leftOffset, LO, HI);
+    else if (ITEM_WIDTH > SCROLL_W)
+        clamped = *LEFT; // wider than the viewport: keep its left edge visible
+    else
+        clamped = (LO + HI) / 2.0; // column + peeks don't fit: split the difference
+
     // Never leave empty space at either side when the columns are wide enough
     // to fill the viewport (e.g. after switching from center mode). Narrower
     // content is centred by recalculate() regardless of leftOffset.
-    const double MAX_W = maxWidth();
     if (MAX_W >= SCROLL_W)
         clamped = std::clamp(clamped, 0.0, MAX_W - SCROLL_W);
     if (std::abs(clamped - leftOffset) < 0.5)
@@ -475,17 +527,14 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
         return;
     }
 
-    const double COLLAPSED_PX = g_config.collapsed_width->value();
-    const bool   FSO          = g_config.fullscreen_on_one_column->value() && columns.size() == 1;
-
-    // Single pass: pinned widths + scrollable total (replaces 3 separate iterations)
-    // FSO (fullscreen single) only applies to unpinned scrollable columns.
+    // Single pass: pinned widths + scrollable total. colWidth() applies
+    // fullscreen_on_one_column, peek_width and stretch_to_fill.
     double PINNED_L = 0, PINNED_R = 0, scrollableMaxWidth = 0;
     for (const auto& COL : columns) {
-        const double nominalW = COL->collapsed ? COLLAPSED_PX : USABLE.w * COL->columnWidth;
-        if (COL->pinned == PIN_LEFT)       PINNED_L += nominalW;
-        else if (COL->pinned == PIN_RIGHT) PINNED_R += nominalW;
-        else                               scrollableMaxWidth += (FSO ? USABLE.w : nominalW);
+        const double W = colWidth(COL, USABLE.w);
+        if (COL->pinned == PIN_LEFT)       PINNED_L += W;
+        else if (COL->pinned == PIN_RIGHT) PINNED_R += W;
+        else                               scrollableMaxWidth += W;
     }
     const double SCROLL_W = USABLE.w - PINNED_L - PINNED_R;
 
@@ -497,7 +546,7 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
         if (COL->pinned != PIN_LEFT)
             continue;
 
-        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX : USABLE.w * COL->columnWidth;
+        const double ITEM_WIDTH = colWidth(COL, USABLE.w);
         double       currentTop = 0.0;
 
         for (const auto& WDATA : COL->windowDatas) {
@@ -517,7 +566,7 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
         if (COL->pinned != PIN_RIGHT)
             continue;
 
-        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX : USABLE.w * COL->columnWidth;
+        const double ITEM_WIDTH = colWidth(COL, USABLE.w);
         pinnedRightX -= ITEM_WIDTH;
         double currentTop = 0.0;
 
@@ -538,7 +587,7 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
             continue;
 
         double       currentTop = 0.0;
-        const double ITEM_WIDTH = COL->collapsed ? COLLAPSED_PX : (FSO ? USABLE.w : USABLE.w * COL->columnWidth);
+        const double ITEM_WIDTH = colWidth(COL, USABLE.w);
 
         for (const auto& WDATA : COL->windowDatas) {
             WDATA->layoutBox = CBox{currentLeft, currentTop, ITEM_WIDTH, WDATA->windowSize * USABLE.h}
@@ -1375,18 +1424,18 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
 
         auto WDATA = focusedWindowData();
 
-        // Helper: sum scrollable width of columns[0..i-1], skipping pinned, accounting for collapsed.
+        // Helper: scroll offset that puts columns[count] at the left edge, minus
+        // a peek strip when there are columns before it. Call after widths change.
         const auto scrollableOffsetBefore = [&](size_t count) -> double {
-            const auto   USABLE       = usableArea();
-            const double COLLAPSED_PX = g_config.collapsed_width->value();
-            double       off          = 0;
+            const double USABLE_W = usableArea().w;
+            double       off      = 0;
             for (size_t j = 0; j < count; ++j) {
                 const auto& col = m_scrollingData->columns[j];
                 if (col->pinned != PIN_NONE)
                     continue;
-                off += col->collapsed ? COLLAPSED_PX : USABLE.w * col->columnWidth;
+                off += m_scrollingData->colWidth(col, USABLE_W);
             }
-            return off;
+            return off > 0 ? off - m_scrollingData->peekWidth(USABLE_W) : off;
         };
 
         if (ARGS[1] == "active") {

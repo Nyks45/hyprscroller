@@ -99,6 +99,8 @@ All options live under `plugin:hyprscrolling:`, i.e. `plugin = { hyprscrolling =
 | `click_edge_left` | int (px) | `0` | Clicks/hover within this distance of the left monitor edge don't scroll (e.g. where a side bar sits) |
 | `click_edge_right` | int (px) | `0` | Same for the right monitor edge |
 | `overview_animate` | bool | `false` | Animate overview enter/exit transitions. Leave off on iGPUs for an instant snap |
+| `peek_width` | int (px) | `0` | Keep this much of the neighbouring columns visible at each side, so off-screen windows stay visible and can be hovered/clicked. Column widths are fractions of the usable width minus the two peek strips |
+| `stretch_to_fill` | bool | `false` | When the columns together are narrower than the screen, stretch them to fill it instead of centring them |
 
 A config reload resets a `togglefit` override back to `focus_fit_method`.
 
@@ -118,6 +120,8 @@ hl.config({
             collapsed_width          = 30,
             focus_history            = true,
             auto_width_rules         = "firefox:0.7, kitty:0.3, code-oss:0.6",
+            peek_width               = 120,
+            stretch_to_fill          = true,
         },
     },
 })
@@ -136,6 +140,8 @@ plugin {
         collapsed_width = 30
         focus_history = true
         auto_width_rules = firefox:0.7, kitty:0.3, code-oss:0.6
+        peek_width = 120
+        stretch_to_fill = true
     }
 }
 ```
