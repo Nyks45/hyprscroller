@@ -58,6 +58,8 @@ struct SColumnData {
     float                                 columnSize       = 1.F;
     float                                 columnWidth      = 1.F;
     float                                 savedColumnWidth = 0.F;
+    // column_scroll: vertical scroll offset of this column, in px.
+    double                                topOffset        = 0.0;
     bool                                  collapsed        = false;
     ePinState                             pinned           = PIN_NONE;
     CScrollingLayout*                     layout           = nullptr;
@@ -91,6 +93,12 @@ struct SScrollingLayoutData {
     double                       scrollWidth();
     // Left edge of an unpinned column in scroll space; nullopt if pinned/absent.
     std::optional<double>        scrollLeft(const SP<SColumnData>& c);
+    // Pixel heights of a column's windows (column_scroll aware); returns the total.
+    double                       rowHeights(const SP<SColumnData>& c, double usableH, std::vector<double>& out);
+    // Lay out one column's windows at x with the given width, applying its vertical offset.
+    void                         placeColumn(const SP<SColumnData>& c, double x, double width, const Vector2D& origin, double usableH, bool forceInstant);
+    // column_scroll: scroll a column vertically so `w` is in view.
+    void                         fitRow(const SP<SColumnData>& c, const SP<SScrollingWindowData>& w);
     SP<SColumnData>              next(SP<SColumnData> c);
     SP<SColumnData>              prev(SP<SColumnData> c);
     SP<SColumnData>              atCenter();

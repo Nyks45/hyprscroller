@@ -134,6 +134,13 @@ void SColumnData::add(SP<Layout::ITarget> t, int after) {
     const size_t n    = windowDatas.size();
     const float  pref = std::clamp((float)g_config.window_default_height->value(), MIN_ROW_HEIGHT, 1.0f);
 
+    // column_scroll: heights are independent fractions of the screen height and
+    // the column scrolls vertically, so a new window doesn't shrink the others.
+    if (g_config.column_scroll->value()) {
+        windowDatas.insert(windowDatas.begin() + after + 1, makeShared<SScrollingWindowData>(t, self.lock(), pref));
+        return;
+    }
+
     float newSize = 1.0f / (float)(n + 1);
     if (n > 0 && pref < 1.0f) {
         // Give the new window `pref`, but never squeeze the others below
@@ -143,7 +150,7 @@ void SColumnData::add(SP<Layout::ITarget> t, int after) {
     }
 
     const float scale        = 1.0f - newSize;
-    const bool  PROPORTIONAL =std::ranges::all_of(windowDatas, [scale](const auto& wd) { return wd->windowSize * scale >= MIN_ROW_HEIGHT; });
+    const bool  PROPORTIONAL = std::ranges::all_of(windowDatas, [scale](const auto& wd) { return wd->windowSize * scale >= MIN_ROW_HEIGHT; });
 
     for (auto& wd : windowDatas)
         wd->windowSize = PROPORTIONAL ? wd->windowSize * scale : scale / (float)n;
@@ -152,16 +159,17 @@ void SColumnData::add(SP<Layout::ITarget> t, int after) {
 }
 
 void SColumnData::add(SP<SScrollingWindowData> w) {
-    for (auto& wd : windowDatas) {
-        wd->windowSize *= (float)windowDatas.size() / (float)(windowDatas.size() + 1);
-    }
-
-    windowDatas.emplace_back(w);
-    w->column     = self;
-    w->windowSize = 1.F / (float)(windowDatas.size());
+    add(w, (int)windowDatas.size() - 1);
 }
 
 void SColumnData::add(SP<SScrollingWindowData> w, int after) {
+    // column_scroll: a moved window keeps its own height (see add(t, after)).
+    if (g_config.column_scroll->value()) {
+        windowDatas.insert(windowDatas.begin() + after + 1, w);
+        w->column = self;
+        return;
+    }
+
     for (auto& wd : windowDatas) {
         wd->windowSize *= (float)windowDatas.size() / (float)(windowDatas.size() + 1);
     }
@@ -193,6 +201,11 @@ void SColumnData::remove(SP<Layout::ITarget> t) {
     std::erase_if(windowDatas, [&t](const auto& e) { return e->target.lock() == t; });
 
     if (SIZE_BEFORE == windowDatas.size() && SIZE_BEFORE > 0)
+        return;
+
+    // column_scroll: remaining windows keep their heights; the column's
+    // vertical offset is re-clamped on the next recalculate().
+    if (g_config.column_scroll->value())
         return;
 
     float newMaxSize = 0.F;
@@ -358,6 +371,88 @@ double SScrollingLayoutData::colWidth(const SP<SColumnData>& c, double usableW) 
     return flexWidth(c, usableW, peekWidth(usableW)) * fillScale(usableW);
 }
 
+double SScrollingLayoutData::rowHeights(const SP<SColumnData>& c, double usableH, std::vector<double>& out) {
+    out.clear();
+
+    if (!g_config.column_scroll->value()) {
+        // Classic: window sizes are shares of the column and sum to 1.
+        for (const auto& WD : c->windowDatas)
+            out.push_back(WD->windowSize * usableH);
+        return usableH;
+    }
+
+    // column_scroll: each window is a fraction of the screen height (minus a
+    // peek strip above and below once there is more than one window), so the
+    // column can be taller than the screen and scrolls vertically.
+    const double PEEK  = c->windowDatas.size() > 1 ? std::clamp((double)g_config.peek_width->value(), 0.0, usableH / 4.0) : 0.0;
+    double       total = 0;
+    for (const auto& WD : c->windowDatas) {
+        out.push_back(WD->windowSize * (usableH - 2.0 * PEEK));
+        total += out.back();
+    }
+
+    // A column shorter than the screen is stretched to fill it.
+    if (total > 0 && total < usableH) {
+        for (auto& h : out)
+            h *= usableH / total;
+        total = usableH;
+    }
+
+    return total;
+}
+
+void SScrollingLayoutData::placeColumn(const SP<SColumnData>& c, double x, double width, const Vector2D& origin, double usableH, bool forceInstant) {
+    std::vector<double> heights;
+    const double        TOTAL = rowHeights(c, usableH, heights);
+
+    c->topOffset = g_config.column_scroll->value() ? std::clamp(c->topOffset, 0.0, std::max(0.0, TOTAL - usableH)) : 0.0;
+
+    double currentTop = -c->topOffset;
+    for (size_t i = 0; i < c->windowDatas.size(); ++i) {
+        const auto& WDATA = c->windowDatas[i];
+        WDATA->layoutBox  = CBox{x, currentTop, width, heights[i]}.translate(origin);
+        currentTop += heights[i];
+        applyLayoutBox(WDATA, forceInstant);
+    }
+}
+
+// Vertical counterpart of fitCol() for column_scroll: scroll the column so `w`
+// is fully visible, plus a peek strip of the windows above/below it.
+void SScrollingLayoutData::fitRow(const SP<SColumnData>& c, const SP<SScrollingWindowData>& w) {
+    if (!g_config.column_scroll->value() || !c || !w)
+        return;
+
+    const double        USABLE_H = layout->usableArea().h;
+    std::vector<double> heights;
+    const double        TOTAL = rowHeights(c, USABLE_H, heights);
+
+    const auto IT = std::ranges::find(c->windowDatas, w);
+    if (IT == c->windowDatas.end())
+        return;
+    const size_t I = IT - c->windowDatas.begin();
+
+    double top = 0;
+    for (size_t j = 0; j < I; ++j)
+        top += heights[j];
+    const double H = heights[I];
+
+    const double PEEK   = c->windowDatas.size() > 1 ? std::clamp((double)g_config.peek_width->value(), 0.0, USABLE_H / 4.0) : 0.0;
+    const double PEEK_T = I > 0 ? PEEK : 0.0;
+    const double PEEK_B = I + 1 < c->windowDatas.size() ? PEEK : 0.0;
+    const double LO     = top + H + PEEK_B - USABLE_H;
+    const double HI     = top - PEEK_T;
+
+    double offset;
+    if (LO <= HI)
+        offset = std::clamp(c->topOffset, LO, HI);
+    else if (H > USABLE_H)
+        offset = top;
+    else
+        offset = (LO + HI) / 2.0;
+
+    c->topOffset = std::clamp(offset, 0.0, std::max(0.0, TOTAL - USABLE_H));
+}
+
 double SScrollingLayoutData::scrollWidth() {
     return layout->usableArea().w - pinnedWidthLeft() - pinnedWidthRight();
 }
@@ -463,6 +558,11 @@ void SScrollingLayoutData::centerOrFitCol(SP<SColumnData> c) {
         fitCol2(c);
     else
         centerCol(c);
+
+    // column_scroll: also bring the column's focused (or last focused) window
+    // into view vertically.
+    const auto FOCUSED = layout->focusedWindowData();
+    fitRow(c, FOCUSED && FOCUSED->column.lock() == c ? FOCUSED : c->lastFocusedWindow.lock());
 }
 
 SP<SColumnData> SScrollingLayoutData::atCenter() {
@@ -509,13 +609,7 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
             layout->m_zenColumn = nullptr;
         } else {
             // Render only the zen column at full width
-            double currentTop = 0.0;
-            for (const auto& WDATA : zenCol->windowDatas) {
-                WDATA->layoutBox = CBox{0, currentTop, USABLE.w, WDATA->windowSize * USABLE.h}
-                                       .translate(WORKAREA.pos());
-                currentTop += WDATA->windowSize * USABLE.h;
-                applyLayoutBox(WDATA, forceInstant);
-            }
+            placeColumn(zenCol, 0, USABLE.w, WORKAREA.pos(), USABLE.h, forceInstant);
 
             // Park all other columns off-screen at their normal size, so
             // clients don't reflow to 1x1 while hidden. Warp them there
@@ -594,15 +688,7 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
             continue;
 
         const double ITEM_WIDTH = colWidth(COL, USABLE.w);
-        double       currentTop = 0.0;
-
-        for (const auto& WDATA : COL->windowDatas) {
-            WDATA->layoutBox = CBox{pinnedLeftX, currentTop, ITEM_WIDTH, WDATA->windowSize * USABLE.h}
-                                   .translate(WORKAREA.pos());
-            currentTop += WDATA->windowSize * USABLE.h;
-
-            applyLayoutBox(WDATA, forceInstant);
-        }
+        placeColumn(COL, pinnedLeftX, ITEM_WIDTH, WORKAREA.pos(), USABLE.h, forceInstant);
         pinnedLeftX += ITEM_WIDTH;
     }
 
@@ -615,15 +701,7 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
 
         const double ITEM_WIDTH = colWidth(COL, USABLE.w);
         pinnedRightX -= ITEM_WIDTH;
-        double currentTop = 0.0;
-
-        for (const auto& WDATA : COL->windowDatas) {
-            WDATA->layoutBox = CBox{pinnedRightX, currentTop, ITEM_WIDTH, WDATA->windowSize * USABLE.h}
-                                   .translate(WORKAREA.pos());
-            currentTop += WDATA->windowSize * USABLE.h;
-
-            applyLayoutBox(WDATA, forceInstant);
-        }
+        placeColumn(COL, pinnedRightX, ITEM_WIDTH, WORKAREA.pos(), USABLE.h, forceInstant);
     }
 
     // Render scrollable (unpinned) columns
@@ -633,17 +711,8 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
         if (COL->pinned != PIN_NONE)
             continue;
 
-        double       currentTop = 0.0;
         const double ITEM_WIDTH = colWidth(COL, USABLE.w);
-
-        for (const auto& WDATA : COL->windowDatas) {
-            WDATA->layoutBox = CBox{currentLeft, currentTop, ITEM_WIDTH, WDATA->windowSize * USABLE.h}
-                                   .translate(WORKAREA.pos() + Vector2D{PINNED_L - cameraLeft, 0.0});
-
-            currentTop += WDATA->windowSize * USABLE.h;
-            applyLayoutBox(WDATA, forceInstant);
-        }
-
+        placeColumn(COL, currentLeft, ITEM_WIDTH, WORKAREA.pos() + Vector2D{PINNED_L - cameraLeft, 0.0}, USABLE.h, forceInstant);
         currentLeft += ITEM_WIDTH;
     }
 }
@@ -922,6 +991,7 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
         // new_window_placement = stack: open below the focused window, in its column.
         col = droppingColumn;
         col->add(target, (int)col->idx(droppingOn));
+        col->lastFocusedWindow = dataFor(target);
     } else {
         const auto idx = droppingColumn ? m_scrollingData->idx(droppingColumn) : -1;
         col            = idx == -1 ? m_scrollingData->add() : m_scrollingData->add(idx);
@@ -1111,7 +1181,13 @@ void CScrollingLayout::resizeTarget(const Vector2D& delta, SP<Layout::ITarget> t
 
     Vector2D modDelta = delta;
 
-    if (DATA->column.lock()->windowDatas.size() > 1) {
+    // column_scroll: only this window's height changes (dragging a top edge
+    // up or a bottom edge down makes it taller); the column scrolls instead.
+    if (g_config.column_scroll->value()) {
+        const bool TOP_EDGE = corner == Layout::CORNER_TOPLEFT || corner == Layout::CORNER_TOPRIGHT;
+        DATA->windowSize    = std::clamp(DATA->windowSize + (float)((TOP_EDGE ? -delta.y : delta.y) / USABLE.h), MIN_ROW_HEIGHT, MAX_ROW_HEIGHT);
+        m_scrollingData->fitRow(CURR_COLUMN, DATA);
+    } else if (DATA->column.lock()->windowDatas.size() > 1) {
         const auto CURR_WD = DATA;
         const auto NEXT_WD = DATA->column.lock()->next(DATA);
         const auto PREV_WD = DATA->column.lock()->prev(DATA);
@@ -1220,6 +1296,10 @@ void CScrollingLayout::focusTargetUpdate(SP<Layout::ITarget> target) {
         if (auto col = WDATA->column.lock()) {
             col->lastFocusedWindow = WDATA;
             syncZenColumn(col);
+            if (g_config.column_scroll->value()) {
+                m_scrollingData->fitRow(col, WDATA);
+                m_scrollingData->recalculate();
+            }
             if (g_config.center_active_column->value()) {
                 m_scrollingData->centerOrFitCol(col);
                 m_scrollingData->recalculate();
@@ -1425,7 +1505,8 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         // Resize the window to targetSize, scaling all other windows in the column proportionally.
         auto applyRowSize = [&](float targetSize) {
             targetSize = std::clamp(targetSize, MIN_ROW_HEIGHT, MAX_ROW_HEIGHT);
-            if (COL->windowDatas.size() > 1) {
+            // column_scroll: heights are independent, the column just gets taller/shorter.
+            if (!g_config.column_scroll->value() && COL->windowDatas.size() > 1) {
                 const float currentOthers = 1.0f - WDATA->windowSize;
                 const float newOthers     = 1.0f - targetSize;
                 if (currentOthers > 0.0f) {
@@ -1443,6 +1524,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 }
             }
             WDATA->windowSize = targetSize;
+            m_scrollingData->fitRow(COL, WDATA);
             m_scrollingData->recalculate(true);
         };
 

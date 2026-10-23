@@ -14,6 +14,7 @@ Based on the `hyprscrolling` plugin from [hyprwm/hyprland-plugins](https://githu
 - Column pinning to left/right screen edge
 - Column collapse/expand toggle
 - Zen mode — show only the focused column (follows focus and new windows)
+- Optional vertical scrolling within columns (`column_scroll`), niri-style
 - Win+Tab-style overview grid (flat tile view with click-to-focus and keyboard navigation)
 - Focus history (back/forward navigation)
 - Per-window-class automatic column width rules
@@ -80,7 +81,7 @@ All options live under `plugin:hyprscrolling:`, i.e. `plugin = { hyprscrolling =
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `column_width` | float (0–1) | `0.5` | Default column width as a fraction of monitor width |
-| `window_default_height` | float (0–1) | `1.0` | Height of a new window in a column. `1.0` splits the column equally; smaller values give the new window that share, never squeezing others below 10% |
+| `window_default_height` | float (0–1) | `1.0` | Height of a new window in a column. `1.0` splits the column equally; smaller values give the new window that share, never squeezing others below 10%. With `column_scroll`, it's the window's height as a fraction of the screen (`1.0` = full height) |
 | `fullscreen_on_one_column` | bool | `false` | If there's only one column, make it fullscreen |
 | `focus_fit_method` | int | `0` | Column scroll behaviour on focus: `0` = center, `1` = fit into view, `2` = gap-free center |
 | `follow_focus` | int | `1` | `0` = off, `1` = scroll on keyboard/programmatic focus, `2` = scroll on all focus including mouse hover (immediately, no timer) |
@@ -102,6 +103,7 @@ All options live under `plugin:hyprscrolling:`, i.e. `plugin = { hyprscrolling =
 | `peek_width` | int (px) | `0` | Keep this much of the neighbouring columns visible at each side, so off-screen windows stay visible and can be hovered/clicked. Column widths are fractions of the usable width minus the two peek strips |
 | `stretch_to_fill` | bool | `false` | When the columns together are narrower than the screen, stretch them to fill it instead of centring them |
 | `new_window_placement` | string | `column` | Where new windows open: `column` = in their own new column next to the focused one, `stack` = in the focused column, below the focused window |
+| `column_scroll` | bool | `false` | Columns scroll vertically: windows in a column keep their own height instead of sharing the screen, a new stacked window opens below and the column scrolls to it, and focusing a window scrolls its column. `peek_width` also applies vertically. Resizing changes only that window's height |
 | `fullscreen_screen_sized` | bool | `false` | Make X11 windows that open asking for the full screen size (borderless games and the like) fullscreen instead of squeezing them into a column. Windows that request fullscreen are always honoured |
 
 A config reload resets `togglefit` and `placement` overrides back to `focus_fit_method` and `new_window_placement`.

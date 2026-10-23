@@ -34,6 +34,7 @@ struct SConfig {
     SP<Config::Values::CIntValue>    stretch_to_fill;
     SP<Config::Values::CIntValue>    fullscreen_screen_sized;
     SP<Config::Values::CStringValue> new_window_placement;
+    SP<Config::Values::CIntValue>    column_scroll;
 };
 
 inline SConfig g_config;
