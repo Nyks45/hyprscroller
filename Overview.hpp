@@ -3,6 +3,7 @@
 #include "Scrolling.hpp"
 
 #include <chrono>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -18,10 +19,13 @@
 // slots without telling clients (Hyprland sends a configure whenever a
 // window's size *animation* begins, so boxes are driven frame by frame from
 // one progress animation that uses the windowsMove curve instead). Clients
-// keep their size and nothing reflows; their buffers are drawn scaled. While open, the overview owns pointer and
-// keyboard input (click/Enter to pick, arrows/wheel to move the selection,
-// drag to rearrange, Esc/Tab to close) and draws a dimmed backdrop, a
-// highlight around the hovered/selected window and title labels.
+// keep their size and nothing reflows; their buffers are drawn scaled.
+//
+// While open, the overview owns pointer and keyboard input: click/Enter to
+// pick, arrows/wheel to move the selection, drag to rearrange, right-click
+// for a window/column menu, Esc/Tab to close. It draws a dimmed backdrop, a
+// highlight that slides to the hovered/selected window, title labels and the
+// menu.
 class COverview {
   public:
     explicit COverview(CScrollingLayout* layout);
@@ -34,7 +38,7 @@ class COverview {
     void toggle();
     void open();
     // Zoom back in. `pick`, if set, becomes the focused window; otherwise the
-    // window that was focused when the overview opened is restored.
+    // currently focused window is kept.
     void close(SP<SScrollingWindowData> pick);
     // Close, picking the keyboard selection.
     void confirm();
@@ -43,6 +47,9 @@ class COverview {
     void apply(bool instant = false);
     // Called from the render pass element.
     void draw(eRenderStage stage);
+    // A window is leaving the layout while open. Hyprland then force-reports
+    // every window's current (thumbnail) size to its client; undo that.
+    void onWindowRemoved();
 
   private:
     struct SSlot {
@@ -56,51 +63,82 @@ class COverview {
         CBox            box; // full-height column area, global logical coords
     };
 
-    CScrollingLayout*                                        m_layout = nullptr;
+    struct SMenuItem {
+        std::string           label;
+        std::function<void()> action;
+        bool                  submenu   = false; // shows a chevron; action swaps the item list
+        bool                  separator = false;
+        bool                  header    = false; // non-interactive title line
+        bool                  checked   = false; // current value in a preset list
+    };
 
-    bool                                                     m_active  = false;
-    bool                                                     m_overlay = false; // drawn while open and while fading out
-    std::chrono::steady_clock::time_point                    m_fadeStart;
+    CScrollingLayout*                                      m_layout = nullptr;
 
-    std::vector<SSlot>                                       m_slots;
-    std::vector<SColumnSlot>                                 m_columnSlots;
+    bool                                                   m_active  = false;
+    bool                                                   m_overlay = false; // drawn while open and while fading out
+    std::chrono::steady_clock::time_point                  m_fadeStart;
 
-    WP<SScrollingWindowData>                                 m_selected;
-    WP<SScrollingWindowData>                                 m_hovered;
-    WP<SScrollingWindowData>                                 m_dragging;
-    WP<Layout::ITarget>                                      m_initialFocus;
-    bool                                                     m_pressed   = false;
-    bool                                                     m_dragMoved = false;
-    Vector2D                                                 m_pressPos;
-    Vector2D                                                 m_grabOffset;
+    std::vector<SSlot>                                     m_slots;
+    std::vector<SColumnSlot>                               m_columnSlots;
 
-    std::unordered_map<std::string, SP<Render::ITexture>>    m_titleCache;
+    WP<SScrollingWindowData>                               m_selected; // keyboard/hover selection (highlighted)
+    WP<SScrollingWindowData>                               m_dragging; // pressed window; dragged once m_dragMoved
+    WP<Layout::ITarget>                                    m_initialFocus;
+    bool                                                   m_pressed       = false;
+    bool                                                   m_dragMoved     = false;
+    bool                                                   m_ignoreRelease = false;
+    Vector2D                                               m_pressPos;
+    Vector2D                                               m_grabOffset;
+
+    // Highlight slides from where it was drawn last to the selected window.
+    CBox                                                   m_highlightFrom;
+    CBox                                                   m_highlightLast;
+    std::chrono::steady_clock::time_point                  m_highlightStart;
+
+    // Right-click menu.
+    bool                                                   m_menuOpen = false;
+    WP<SScrollingWindowData>                               m_menuTarget;
+    std::vector<SMenuItem>                                 m_menuItems;
+    std::vector<CBox>                                      m_menuItemBoxes; // global logical, parallel to m_menuItems
+    CBox                                                   m_menuBox;
+    int                                                    m_menuHover = -1;
+
+    std::unordered_map<std::string, SP<Render::ITexture>>  m_textCache;
 
     // One progress value (0 -> 1, windowsMove curve) drives every window from
     // its box when the animation (re)started to its slot.
     struct SAnim {
         CBox from, to;
     };
-    PHLANIMVAR<float>                                        m_progress;
-    std::unordered_map<const SScrollingWindowData*, SAnim>   m_anims;
+    PHLANIMVAR<float>                                      m_progress;
+    std::unordered_map<const SScrollingWindowData*, SAnim> m_anims;
 
-    CHyprSignalListener                                      m_keyListener;
-    CHyprSignalListener                                      m_buttonListener;
-    CHyprSignalListener                                      m_moveListener;
-    CHyprSignalListener                                      m_axisListener;
-    CHyprSignalListener                                      m_renderListener;
+    CHyprSignalListener                                    m_keyListener;
+    CHyprSignalListener                                    m_buttonListener;
+    CHyprSignalListener                                    m_moveListener;
+    CHyprSignalListener                                    m_axisListener;
+    CHyprSignalListener                                    m_renderListener;
 
-    PHLMONITOR                                               monitor() const;
-    void                                                     computeSlots();
-    const SSlot*                                             slotAt(const Vector2D& pos) const;
-    const SSlot*                                             slotFor(const SP<SScrollingWindowData>& data) const;
-    float                                                    overlayAlpha() const;
-    void                                                     damage() const;
-    void                                                     setHovered(const SP<SScrollingWindowData>& data);
-    void                                                     moveSelection(Math::eDirection dir);
-    void                                                     drop(const Vector2D& pos);
-    SP<Render::ITexture>                                     titleTexture(const std::string& title, int maxWidthPx);
-    void                                                     stopInput();
-    void                                                     step();
-    static void                                              placeWindow(const PHLWINDOW& window, const CBox& box);
+    PHLMONITOR                                             monitor() const;
+    void                                                   computeSlots();
+    const SSlot*                                           slotAt(const Vector2D& pos) const;
+    const SSlot*                                           slotFor(const SP<SScrollingWindowData>& data) const;
+    float                                                  overlayAlpha() const;
+    void                                                   damage() const;
+    void                                                   select(const SP<SScrollingWindowData>& data);
+    void                                                   moveSelection(Math::eDirection dir);
+    void                                                   drop(const Vector2D& pos);
+    SP<Render::ITexture>                                   text(const std::string& str, int maxWidthPx);
+    void                                                   stopInput();
+    void                                                   step();
+    static void                                            placeWindow(const PHLWINDOW& window, const CBox& box);
+
+    void                                                   openMenu(const SP<SScrollingWindowData>& data, const Vector2D& pos);
+    void                                                   setMenuItems(std::vector<SMenuItem>&& items);
+    std::vector<SMenuItem>                                 rootMenu(const SP<SScrollingWindowData>& data);
+    void                                                   closeMenu();
+    int                                                    menuItemAt(const Vector2D& pos) const;
+    void                                                   activateMenuItem(int idx);
+    void                                                   moveMenuHover(int delta);
+    void                                                   drawMenu(const PHLMONITOR& mon, float alpha);
 };

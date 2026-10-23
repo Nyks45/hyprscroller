@@ -207,7 +207,7 @@ Send commands with the layout message dispatcher: `hl.dsp.layout("<message>")` i
 | Message | Description |
 |---|---|
 | `zen` | Show only the focused column (focus mode). Follows focus and new windows; toggle to exit |
-| `overview` | Toggle the overview: the workspace zooms out to show every column and window in place. Click a window (or move the highlight with arrows/hjkl/wheel and press Enter/Space) to focus it and zoom back in; Esc, Tab or a click on empty space closes. Drag a window onto another column to stack it there, or near a column's edge / past the ends to give it its own column |
+| `overview` | Toggle the overview: the workspace zooms out to show every column and window in place. Click a window (or move the highlight with arrows/hjkl/wheel and press Enter/Space) to focus it and zoom back in; Esc, Tab or a click on empty space closes. Drag a window onto another column to stack it there, or near a column's edge / past the ends to give it its own column. Right-click a window (or press the Menu key) for: focus, fullscreen, float, move to workspace, close, column width, window height, own column, move column left/right, pin/unpin, collapse/expand |
 | `overview_confirm` | Pick the highlighted window and close the overview |
 | `pin left` | Pin current column to the left screen edge (stays fixed while scrolling) |
 | `pin right` | Pin current column to the right screen edge |

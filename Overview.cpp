@@ -2,6 +2,8 @@
 #include "globals.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <format>
 #include <linux/input-event-codes.h>
 
 #include <hyprland/src/desktop/Workspace.hpp>
@@ -17,26 +19,36 @@
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/render/pass/PassElement.hpp>
+#include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 #include <hyprland/src/devices/IKeyboard.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
-#include <xkbcommon/xkbcommon.h>
 #include <hyprland/src/animation/AnimationManager.hpp>
 #include <hyprland/src/config/shared/animation/AnimationTree.hpp>
+#include <hyprland/src/state/WorkspaceState.hpp>
+#include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
+#include <xkbcommon/xkbcommon.h>
 
 using namespace Render::GL;
 
 // Layout of the zoomed-out strip, in logical px.
-constexpr double OV_MARGIN         = 48.0; // free space around the strip
-constexpr double OV_GAP            = 10.0; // space between thumbnails
-constexpr double OV_LIFT           = 6.0;  // hovered/selected thumbnail grows by this on each side
-constexpr double OV_DRAG_THRESHOLD = 8.0;  // pointer travel before a press becomes a drag
-constexpr double OV_NEW_COLUMN_EDGE = 0.2; // drop in the outer 20% of a column -> new column beside it
-constexpr int    OV_FADE_MS        = 220;  // backdrop/label fade
-constexpr float  OV_DIM            = 0.45F;
+constexpr double OV_MARGIN          = 48.0; // free space around the strip
+constexpr double OV_GAP             = 10.0; // space between thumbnails
+constexpr double OV_DRAG_THRESHOLD  = 8.0;  // pointer travel before a press becomes a drag
+constexpr double OV_NEW_COLUMN_EDGE = 0.2;  // drop in the outer 20% of a column -> new column beside it
+constexpr int    OV_FADE_MS         = 220;  // backdrop/label fade
+constexpr int    OV_HIGHLIGHT_MS    = 110;  // highlight slide between windows
+constexpr float  OV_DIM             = 0.45F;
 
-// Draws the overview's backdrop (before windows) or highlight and labels
-// (after windows) for the monitor being rendered.
+// Right-click menu, logical px.
+constexpr double MENU_WIDTH    = 250.0;
+constexpr double MENU_ITEM_H   = 30.0;
+constexpr double MENU_HEADER_H = 30.0;
+constexpr double MENU_SEP_H    = 9.0;
+constexpr double MENU_PAD      = 6.0;
+
+// Draws the overview's backdrop (before windows) or highlight, labels and
+// menu (after windows) for the monitor being rendered.
 class COverviewPassElement : public IPassElement {
   public:
     COverviewPassElement(COverview* overview, eRenderStage stage) : m_overview(overview), m_stage(stage) {
@@ -71,6 +83,24 @@ static CHyprColor accentColor(float alpha) {
     return CHyprColor{((ARGB >> 16) & 0xFF) / 255.F, ((ARGB >> 8) & 0xFF) / 255.F, (ARGB & 0xFF) / 255.F, ((ARGB >> 24) & 0xFF) / 255.F * alpha};
 }
 
+static double easeOutCubic(double t) {
+    t = std::clamp(t, 0.0, 1.0);
+    return 1.0 - std::pow(1.0 - t, 3.0);
+}
+
+static CBox lerpBox(const CBox& a, const CBox& b, double t) {
+    return CBox{a.pos() + (b.pos() - a.pos()) * t, a.size() + (b.size() - a.size()) * t};
+}
+
+static int msSince(std::chrono::steady_clock::time_point t) {
+    return (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t).count();
+}
+
+static PHLWINDOW windowOf(const SP<SScrollingWindowData>& data) {
+    const auto TARGET = data ? data->target.lock() : nullptr;
+    return TARGET ? TARGET->window() : nullptr;
+}
+
 COverview::COverview(CScrollingLayout* layout) : m_layout(layout) {
     ;
 }
@@ -96,8 +126,7 @@ void COverview::damage() const {
 float COverview::overlayAlpha() const {
     if (!g_config.overview_animate->value())
         return m_active ? 1.F : 0.F;
-    const auto  MS = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_fadeStart).count();
-    const float T  = std::clamp((float)MS / OV_FADE_MS, 0.F, 1.F);
+    const float T = std::clamp((float)msSince(m_fadeStart) / OV_FADE_MS, 0.F, 1.F);
     return m_active ? T : 1.F - T;
 }
 
@@ -151,7 +180,7 @@ void COverview::computeSlots() {
         double y = 0;
         for (size_t i = 0; i < CL.column->windowDatas.size(); ++i) {
             CBox box = CBox{ORIGIN.x + CL.x * S, ORIGIN.y + y * S, CL.w * S, CL.heights[i] * S}.expand(-OV_GAP / 2.0);
-            m_slots.push_back({.data = CL.column->windowDatas[i], .column = CL.column, .box = box});
+            m_slots.push_back({.data = CL.column->windowDatas[i], .column = CL.column, .box = box.round()});
             y += CL.heights[i];
         }
     }
@@ -190,25 +219,30 @@ void COverview::placeWindow(const PHLWINDOW& window, const CBox& box) {
 void COverview::apply(bool instant) {
     computeSlots();
 
-    const auto LIFTED  = m_hovered.lock() ? m_hovered.lock() : m_selected.lock();
+    // The selected window may have closed or moved away: fall back to the
+    // focused window, else the first one, so something is always highlighted.
+    if (!m_slots.empty() && !slotFor(m_selected.lock())) {
+        const auto FOCUSED = m_layout->focusedWindowData();
+        m_selected         = slotFor(FOCUSED) ? FOCUSED : m_slots.front().data.lock();
+    }
+
     const auto DRAGGED = m_dragMoved ? m_dragging.lock() : nullptr;
+
+    // Windows appearing/closing can make Hyprland re-check the pointer and let
+    // a client set its cursor; the overview keeps the arrow (or the grab hand).
+    if (m_active)
+        g_pHyprRenderer->setCursorFromName(DRAGGED ? "grabbing" : "left_ptr", true);
 
     m_anims.clear();
     for (const auto& SLOT : m_slots) {
         const auto DATA   = SLOT.data.lock();
-        const auto TARGET = DATA ? DATA->target.lock() : nullptr;
-        const auto WINDOW = TARGET ? TARGET->window() : nullptr;
+        const auto WINDOW = windowOf(DATA);
         if (!WINDOW || DATA == DRAGGED)
             continue;
 
-        CBox box = SLOT.box;
-        if (DATA == LIFTED)
-            box.expand(OV_LIFT);
-        box.round();
-
         // Start from wherever the window is drawn right now, so retargeting
-        // mid-animation (hover, selection, opening/closing windows) is smooth.
-        m_anims[DATA.get()] = {.from = CBox{WINDOW->positionAnimation()->value(), WINDOW->sizeAnimation()->value()}, .to = box};
+        // mid-animation (opening/closing windows, drops) is smooth.
+        m_anims[DATA.get()] = {.from = CBox{WINDOW->positionAnimation()->value(), WINDOW->sizeAnimation()->value()}, .to = SLOT.box};
     }
 
     if (!m_progress) {
@@ -231,19 +265,20 @@ void COverview::step() {
     if (!m_active)
         return;
 
-    const float P = std::clamp(m_progress->value(), 0.F, 1.F);
+    const auto  DRAGGED = m_dragMoved ? m_dragging.lock() : nullptr;
+    const float P       = std::clamp(m_progress->value(), 0.F, 1.F);
     for (const auto& SLOT : m_slots) {
         const auto DATA = SLOT.data.lock();
-        const auto IT   = DATA ? m_anims.find(DATA.get()) : m_anims.end();
-        if (IT == m_anims.end())
+        // The dragged window follows the pointer; animating it as well would
+        // make the two fight every frame (flicker).
+        if (!DATA || DATA == DRAGGED)
             continue;
-        const auto TARGET = DATA->target.lock();
-        const auto WINDOW = TARGET ? TARGET->window() : nullptr;
-        if (!WINDOW)
+        const auto IT     = m_anims.find(DATA.get());
+        const auto WINDOW = windowOf(DATA);
+        if (IT == m_anims.end() || !WINDOW)
             continue;
 
-        const auto& A = IT->second;
-        placeWindow(WINDOW, CBox{A.from.pos() + (A.to.pos() - A.from.pos()) * P, A.from.size() + (A.to.size() - A.from.size()) * P});
+        placeWindow(WINDOW, lerpBox(IT->second.from, IT->second.to, P));
     }
     damage();
 }
@@ -253,6 +288,18 @@ void COverview::toggle() {
         close(nullptr);
     else
         open();
+}
+
+void COverview::select(const SP<SScrollingWindowData>& data) {
+    if (!data || m_selected.lock() == data)
+        return;
+
+    // Hover/keyboard selection is purely an overlay effect: the highlight
+    // slides over quickly; windows themselves don't move.
+    m_highlightFrom  = m_highlightLast;
+    m_highlightStart = std::chrono::steady_clock::now();
+    m_selected       = data;
+    damage();
 }
 
 void COverview::open() {
@@ -269,13 +316,19 @@ void COverview::open() {
     const auto FOCUSED = m_layout->focusedWindowData();
     m_initialFocus     = FOCUSED ? FOCUSED->target : WP<Layout::ITarget>{};
     m_selected         = FOCUSED ? FOCUSED : m_layout->m_scrollingData->columns.front()->windowDatas.front();
-    m_hovered.reset();
+    m_highlightLast    = {};
     m_dragging.reset();
-    m_pressed   = false;
-    m_dragMoved = false;
-    m_active    = true;
-    m_overlay   = true;
-    m_fadeStart = std::chrono::steady_clock::now();
+    m_pressed       = false;
+    m_dragMoved     = false;
+    m_ignoreRelease = false;
+    m_menuOpen      = false;
+    m_active        = true;
+    m_overlay       = true;
+    m_fadeStart     = std::chrono::steady_clock::now();
+
+    // While open, the overview owns the pointer: show a plain arrow instead of
+    // whatever shape the window under it last asked for.
+    g_pHyprRenderer->setCursorFromName("left_ptr", true);
 
     // Own the keyboard: navigation keys act on the overview; nothing reaches
     // clients or keybinds. Modifier keys and releases pass through so no
@@ -321,6 +374,32 @@ void COverview::open() {
 
         info.cancelled = true;
 
+        if (m_menuOpen) {
+            switch (sym) {
+                case XKB_KEY_Escape: closeMenu(); break;
+                case XKB_KEY_Return:
+                case XKB_KEY_KP_Enter:
+                case XKB_KEY_space:
+                case XKB_KEY_Right:
+                case XKB_KEY_l: activateMenuItem(m_menuHover); break;
+                case XKB_KEY_Up:
+                case XKB_KEY_k: moveMenuHover(-1); break;
+                case XKB_KEY_Down:
+                case XKB_KEY_j: moveMenuHover(1); break;
+                case XKB_KEY_Left:
+                case XKB_KEY_h:
+                case XKB_KEY_BackSpace:
+                    // Back out of a submenu, or close the root menu.
+                    if (!m_menuItems.empty() && m_menuItems.front().label.starts_with("‹"))
+                        activateMenuItem(0);
+                    else
+                        closeMenu();
+                    break;
+                default: break;
+            }
+            return;
+        }
+
         switch (sym) {
             case XKB_KEY_Escape:
             case XKB_KEY_Tab:
@@ -328,6 +407,13 @@ void COverview::open() {
             case XKB_KEY_Return:
             case XKB_KEY_KP_Enter:
             case XKB_KEY_space: confirm(); break;
+            case XKB_KEY_Menu: {
+                const auto SEL  = m_selected.lock();
+                const auto SLOT = SEL ? slotFor(SEL) : nullptr;
+                if (SLOT)
+                    openMenu(SEL, SLOT->box.middle());
+                break;
+            }
             case XKB_KEY_Left:
             case XKB_KEY_h: moveSelection(Math::DIRECTION_LEFT); break;
             case XKB_KEY_Right:
@@ -340,31 +426,49 @@ void COverview::open() {
         }
     });
 
-    // Pointer motion: hover highlight and dragging. Cancelling the event keeps
-    // focus-follows-mouse and client hover out of it; the cursor still moves.
+    // Pointer motion: hover selection, menu hover and dragging. Cancelling the
+    // event keeps focus-follows-mouse and client hover out of it; the cursor
+    // still moves.
     m_moveListener = Event::bus()->m_events.input.mouse.move.listen([this](Vector2D pos, Event::SCallbackInfo& info) {
         if (!m_active)
             return;
         info.cancelled = true;
 
-        if (m_pressed && !m_dragMoved && pos.distance(m_pressPos) > OV_DRAG_THRESHOLD && m_dragging.lock())
-            m_dragMoved = true;
-
-        if (m_dragMoved) {
-            const auto DATA   = m_dragging.lock();
-            const auto SLOT   = DATA ? slotFor(DATA) : nullptr;
-            const auto TARGET = DATA ? DATA->target.lock() : nullptr;
-            if (SLOT && TARGET && TARGET->window()) {
-                CBox box{pos - m_grabOffset, SLOT->box.size()};
-                box.round();
-                placeWindow(TARGET->window(), box);
+        if (m_menuOpen) {
+            const int IDX = menuItemAt(pos);
+            if (IDX != m_menuHover) {
+                m_menuHover = IDX;
                 damage();
             }
             return;
         }
 
-        const auto SLOT = slotAt(pos);
-        setHovered(SLOT ? SLOT->data.lock() : nullptr);
+        if (m_pressed && !m_dragMoved && pos.distance(m_pressPos) > OV_DRAG_THRESHOLD && m_dragging.lock()) {
+            m_dragMoved = true;
+            // Lift the dragged window out of the animation and above its
+            // neighbours.
+            if (const auto DATA = m_dragging.lock()) {
+                m_anims.erase(DATA.get());
+                if (const auto WINDOW = windowOf(DATA))
+                    (void)Config::Actions::alterZOrder("top", WINDOW);
+            }
+            g_pHyprRenderer->setCursorFromName("grabbing", true);
+        }
+
+        if (m_dragMoved) {
+            const auto DATA   = m_dragging.lock();
+            const auto SLOT   = DATA ? slotFor(DATA) : nullptr;
+            const auto WINDOW = windowOf(DATA);
+            if (SLOT && WINDOW) {
+                CBox box{pos - m_grabOffset, SLOT->box.size()};
+                placeWindow(WINDOW, box.round());
+                damage();
+            }
+            return;
+        }
+
+        if (const auto SLOT = slotAt(pos))
+            select(SLOT->data.lock());
     });
 
     m_buttonListener = Event::bus()->m_events.input.mouse.button.listen([this](IPointer::SButtonEvent ev, Event::SCallbackInfo& info) {
@@ -372,15 +476,43 @@ void COverview::open() {
             return;
         info.cancelled = true;
 
+        const auto POS     = g_pInputManager->getMouseCoordsInternal();
+        const bool PRESSED = ev.state == WL_POINTER_BUTTON_STATE_PRESSED;
+
+        if (m_menuOpen) {
+            if (!PRESSED)
+                return;
+            if (ev.button == BTN_LEFT && m_menuBox.containsPoint(POS)) {
+                activateMenuItem(menuItemAt(POS));
+                return;
+            }
+            // Any click outside closes the menu; a right-click on a window
+            // reopens it there.
+            closeMenu();
+            m_ignoreRelease = true;
+            if (ev.button == BTN_RIGHT) {
+                if (const auto SLOT = slotAt(POS))
+                    openMenu(SLOT->data.lock(), POS);
+            }
+            return;
+        }
+
+        if (ev.button == BTN_RIGHT) {
+            if (PRESSED && !m_pressed) {
+                if (const auto SLOT = slotAt(POS))
+                    openMenu(SLOT->data.lock(), POS);
+            }
+            return;
+        }
+
         if (ev.button != BTN_LEFT)
             return;
 
-        const auto POS = g_pInputManager->getMouseCoordsInternal();
-
-        if (ev.state == WL_POINTER_BUTTON_STATE_PRESSED) {
+        if (PRESSED) {
             const auto SLOT = slotAt(POS);
             m_pressed       = true;
             m_dragMoved     = false;
+            m_ignoreRelease = false;
             m_pressPos      = POS;
             m_dragging      = SLOT ? SLOT->data : WP<SScrollingWindowData>{};
             m_grabOffset    = SLOT ? POS - SLOT->box.pos() : Vector2D{};
@@ -388,10 +520,12 @@ void COverview::open() {
         }
 
         // Release.
-        const bool WAS_PRESSED = m_pressed;
+        const bool WAS_PRESSED = m_pressed && !m_ignoreRelease;
         m_pressed              = false;
+        m_ignoreRelease        = false;
 
         if (m_dragMoved) {
+            g_pHyprRenderer->setCursorFromName("left_ptr", true);
             drop(POS);
             return;
         }
@@ -404,17 +538,13 @@ void COverview::open() {
         close(PICK);
     });
 
-    // Wheel: step through all windows in reading order (column by column).
+    // Wheel: step the selection through all windows in reading order.
     m_axisListener = Event::bus()->m_events.input.mouse.axis.listen([this](IPointer::SAxisEvent ev, Event::SCallbackInfo& info) {
         if (!m_active)
             return;
         info.cancelled = true;
 
-        if (ev.delta == 0)
-            return;
-
-        computeSlots();
-        if (m_slots.empty())
+        if (ev.delta == 0 || m_menuOpen || m_slots.empty())
             return;
 
         const auto CURRENT = m_selected.lock();
@@ -424,15 +554,12 @@ void COverview::open() {
                 idx = i;
         }
 
-        const bool FORWARD = ev.delta > 0;
-        if (FORWARD && idx + 1 < m_slots.size())
+        if (ev.delta > 0 && idx + 1 < m_slots.size())
             idx++;
-        else if (!FORWARD && idx > 0)
+        else if (ev.delta < 0 && idx > 0)
             idx--;
 
-        m_selected = m_slots[idx].data;
-        m_hovered.reset();
-        apply();
+        select(m_slots[idx].data.lock());
     });
 
     if (!m_renderListener) {
@@ -473,9 +600,11 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     m_pressed   = false;
     m_dragMoved = false;
     m_dragging.reset();
-    m_hovered.reset();
+    m_menuOpen = false;
+    m_menuItems.clear();
     m_fadeStart = std::chrono::steady_clock::now();
-    m_titleCache.clear();
+    m_textCache.clear();
+    g_pHyprRenderer->setCursorFromName("left_ptr", true);
 
     // Zoom back in on the picked window; otherwise on the focused one (a window
     // opened meanwhile takes focus), or whatever was focused when we opened.
@@ -492,10 +621,8 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     // Keep drawing buffers scaled (not cropped) while windows grow back;
     // Hyprland clears this when their move/resize animation ends.
     for (const auto& SLOT : m_slots) {
-        const auto DATA = SLOT.data.lock();
-        const auto TGT  = DATA ? DATA->target.lock() : nullptr;
-        if (TGT && TGT->window())
-            TGT->window()->m_animatingIn = true;
+        if (const auto WINDOW = windowOf(SLOT.data.lock()))
+            WINDOW->m_animatingIn = true;
     }
 
     // Leaving overview mode: this applies the real layout boxes again, animated.
@@ -507,28 +634,16 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     damage();
 }
 
-void COverview::setHovered(const SP<SScrollingWindowData>& data) {
-    if (m_hovered.lock() == data)
-        return;
-
-    m_hovered = data;
-    if (data)
-        m_selected = data;
-    apply();
-}
-
 void COverview::moveSelection(Math::eDirection dir) {
-    computeSlots();
     const auto CURRENT = m_selected.lock();
     const auto SLOT    = CURRENT ? slotFor(CURRENT) : nullptr;
     if (!SLOT) {
         if (!m_slots.empty())
-            m_selected = m_slots.front().data;
-        apply();
+            select(m_slots.front().data.lock());
         return;
     }
 
-    const auto COL = SLOT->column.lock();
+    const auto               COL = SLOT->column.lock();
     SP<SScrollingWindowData> next;
 
     if (dir == Math::DIRECTION_UP)
@@ -560,11 +675,7 @@ void COverview::moveSelection(Math::eDirection dir) {
         }
     }
 
-    if (next) {
-        m_selected = next;
-        m_hovered.reset();
-        apply();
-    }
+    select(next);
 }
 
 void COverview::drop(const Vector2D& pos) {
@@ -638,23 +749,367 @@ void COverview::drop(const Vector2D& pos) {
     }
 
     m_selected = DATA;
-    m_hovered  = DATA;
     apply();
 }
 
-SP<Render::ITexture> COverview::titleTexture(const std::string& title, int maxWidthPx) {
-    if (title.empty() || maxWidthPx < 8)
+void COverview::onWindowRemoved() {
+    if (!m_active)
+        return;
+
+    // When a window unmaps, Hyprland calls forceReportSizesToWindows(): every
+    // window on the workspace is sent its size goal, which during the
+    // overview is the thumbnail size, so clients would really shrink. Right
+    // after that (doLater), send each overview window its real size again, the
+    // one it last acknowledged, and put the thumbnail box back. Both
+    // configures arrive together, so clients settle on the real size.
+    std::vector<PHLWINDOWREF> windows;
+    for (const auto& SLOT : m_slots) {
+        if (const auto WINDOW = windowOf(SLOT.data.lock()))
+            windows.emplace_back(WINDOW);
+    }
+
+    g_pEventLoopManager->doLater([windows] {
+        for (const auto& REF : windows) {
+            const auto WINDOW = REF.lock();
+            if (!WINDOW || !WINDOW->m_isMapped)
+                continue;
+
+            const CBox     THUMB{WINDOW->positionAnimation()->value(), WINDOW->sizeAnimation()->value()};
+            const Vector2D REAL = WINDOW->getReportedSize();
+            if (REAL.x < 1 || REAL.y < 1 || REAL == THUMB.size())
+                continue;
+
+            WINDOW->sizeAnimation()->setValueAndWarp(REAL);
+            WINDOW->sendWindowSize(true);
+            placeWindow(WINDOW, THUMB);
+        }
+    });
+}
+
+// ---------------------------------------------------------------- menu ----
+
+void COverview::setMenuItems(std::vector<SMenuItem>&& items) {
+    m_menuItems = std::move(items);
+    m_menuItemBoxes.clear();
+
+    // Lay the menu out at its anchor (m_menuBox.pos()), kept on the monitor.
+    double h = 2 * MENU_PAD;
+    for (const auto& IT : m_menuItems)
+        h += IT.separator ? MENU_SEP_H : IT.header ? MENU_HEADER_H : MENU_ITEM_H;
+
+    m_menuBox.w = MENU_WIDTH;
+    m_menuBox.h = h;
+    if (const auto MON = monitor()) {
+        const auto MB = MON->logicalBox();
+        m_menuBox.x   = std::clamp(m_menuBox.x, MB.x + 8, std::max(MB.x + 8, MB.x + MB.w - m_menuBox.w - 8));
+        m_menuBox.y   = std::clamp(m_menuBox.y, MB.y + 8, std::max(MB.y + 8, MB.y + MB.h - m_menuBox.h - 8));
+    }
+
+    double y = m_menuBox.y + MENU_PAD;
+    for (const auto& IT : m_menuItems) {
+        const double H = IT.separator ? MENU_SEP_H : IT.header ? MENU_HEADER_H : MENU_ITEM_H;
+        m_menuItemBoxes.push_back(CBox{m_menuBox.x + MENU_PAD, y, MENU_WIDTH - 2 * MENU_PAD, H});
+        y += H;
+    }
+
+    m_menuHover = -1;
+    damage();
+}
+
+void COverview::openMenu(const SP<SScrollingWindowData>& data, const Vector2D& pos) {
+    if (!data)
+        return;
+    select(data);
+    m_menuOpen   = true;
+    m_menuTarget = data;
+    m_menuBox.x  = pos.x;
+    m_menuBox.y  = pos.y;
+    setMenuItems(rootMenu(data));
+    g_pHyprRenderer->setCursorFromName("left_ptr", true);
+}
+
+void COverview::closeMenu() {
+    m_menuOpen = false;
+    m_menuItems.clear();
+    m_menuItemBoxes.clear();
+    m_menuHover = -1;
+    damage();
+}
+
+int COverview::menuItemAt(const Vector2D& pos) const {
+    for (size_t i = 0; i < m_menuItemBoxes.size(); ++i) {
+        const auto& IT = m_menuItems[i];
+        if (!IT.separator && !IT.header && m_menuItemBoxes[i].containsPoint(pos))
+            return (int)i;
+    }
+    return -1;
+}
+
+void COverview::moveMenuHover(int delta) {
+    if (m_menuItems.empty())
+        return;
+    const int N = (int)m_menuItems.size();
+    int       i = m_menuHover < 0 ? (delta > 0 ? -1 : N) : m_menuHover;
+    for (int step = 0; step < N; ++step) {
+        i = (i + delta + N) % N;
+        if (!m_menuItems[i].separator && !m_menuItems[i].header) {
+            m_menuHover = i;
+            break;
+        }
+    }
+    damage();
+}
+
+void COverview::activateMenuItem(int idx) {
+    if (idx < 0 || idx >= (int)m_menuItems.size() || m_menuItems[idx].separator || m_menuItems[idx].header || !m_menuItems[idx].action)
+        return;
+
+    const bool SUBMENU = m_menuItems[idx].submenu || m_menuItems[idx].label.starts_with("‹");
+    // Copy: the action may replace m_menuItems (submenus) or close the overview.
+    const auto ACTION = m_menuItems[idx].action;
+    if (!SUBMENU)
+        closeMenu();
+    ACTION();
+}
+
+std::vector<COverview::SMenuItem> COverview::rootMenu(const SP<SScrollingWindowData>& data) {
+    std::vector<SMenuItem> items;
+    const auto             WINDOW = windowOf(data);
+    const auto             COL    = data ? data->column.lock() : nullptr;
+    if (!WINDOW || !COL)
+        return items;
+
+    auto&      LAYOUT  = m_layout->m_scrollingData;
+    const WP<SScrollingWindowData> WDATA = data;
+    const WP<SColumnData>          WCOL  = COL;
+    const bool STACKED = COL->windowDatas.size() > 1;
+
+    const auto pct = [](float f) { return std::format("{}%", (int)std::round(f * 100)); };
+
+    items.push_back({.label = WINDOW->m_title.empty() ? WINDOW->m_class : WINDOW->m_title, .header = true});
+
+    // Window
+    items.push_back({.label = "Focus", .action = [this, WDATA] { close(WDATA.lock()); }});
+    items.push_back({.label = "Fullscreen", .action = [this, WDATA] {
+                         const auto D = WDATA.lock();
+                         const auto W = windowOf(D);
+                         close(D);
+                         if (W)
+                             (void)Config::Actions::fullscreenWindow(Fullscreen::FSMODE_FULLSCREEN, false, W);
+                     }});
+    items.push_back({.label = "Float", .action = [this, WDATA] {
+                         const auto D = WDATA.lock();
+                         const auto W = windowOf(D);
+                         close(D);
+                         if (W)
+                             (void)Config::Actions::floatWindow(Config::Actions::TOGGLE_ACTION_ENABLE, W);
+                     }});
+    items.push_back({.label = "Move to workspace", .action = [this, WDATA] {
+                         std::vector<SMenuItem> sub;
+                         sub.push_back({.label = "‹  Back", .action = [this, WDATA] { setMenuItems(rootMenu(WDATA.lock())); }});
+                         const auto MON = monitor();
+                         const auto CUR = MON ? MON->m_activeWorkspace : nullptr;
+                         for (int id = 1; id <= 10; ++id) {
+                             if (CUR && CUR->m_id == id)
+                                 continue;
+                             sub.push_back({.label = std::format("Workspace {}", id), .action = [this, WDATA, id] {
+                                                const auto W = windowOf(WDATA.lock());
+                                                const auto M = monitor();
+                                                if (!W || !M)
+                                                    return;
+                                                PHLWORKSPACE ws;
+                                                for (const auto& w : State::workspaceState()->workspacesCopy()) {
+                                                    if (w && w->m_id == id)
+                                                        ws = w;
+                                                }
+                                                if (!ws)
+                                                    ws = State::workspaceState()->create(id, M->m_id, std::to_string(id));
+                                                if (ws)
+                                                    (void)Config::Actions::moveToWorkspace(ws, true, W);
+                                            }});
+                         }
+                         setMenuItems(std::move(sub));
+                     },
+                     .submenu = true});
+    items.push_back({.label = "Close window", .action = [WDATA] {
+                         if (const auto W = windowOf(WDATA.lock()))
+                             (void)Config::Actions::closeWindow(W);
+                     }});
+
+    items.push_back({.separator = true});
+
+    // Column
+    items.push_back({.label = "Column width", .action = [this, WDATA, WCOL, pct] {
+                         std::vector<SMenuItem> sub;
+                         sub.push_back({.label = "‹  Back", .action = [this, WDATA] { setMenuItems(rootMenu(WDATA.lock())); }});
+                         const auto C = WCOL.lock();
+                         for (const float W : m_layout->m_config.configuredWidths) {
+                             sub.push_back({.label = pct(W), .action = [this, WCOL, W] {
+                                                if (const auto C2 = WCOL.lock()) {
+                                                    C2->columnWidth = W;
+                                                    apply();
+                                                }
+                                            },
+                                            .checked = C && std::abs(C->columnWidth - W) < 0.01F});
+                         }
+                         setMenuItems(std::move(sub));
+                     },
+                     .submenu = true});
+
+    if (STACKED || g_config.column_scroll->value()) {
+        items.push_back({.label = "Window height", .action = [this, WDATA, WCOL, pct] {
+                             std::vector<SMenuItem> sub;
+                             sub.push_back({.label = "‹  Back", .action = [this, WDATA] { setMenuItems(rootMenu(WDATA.lock())); }});
+                             const auto D = WDATA.lock();
+                             for (const float H : m_layout->m_config.configuredHeights) {
+                                 sub.push_back({.label = pct(H), .action = [this, WDATA, WCOL, H] {
+                                                    const auto D2 = WDATA.lock();
+                                                    const auto C2 = WCOL.lock();
+                                                    if (!D2 || !C2)
+                                                        return;
+                                                    // Same rules as rowresize: independent heights with
+                                                    // column_scroll, otherwise the others share the rest.
+                                                    if (!g_config.column_scroll->value() && C2->windowDatas.size() > 1) {
+                                                        const float OTHERS = 1.F - D2->windowSize;
+                                                        for (auto& wd : C2->windowDatas) {
+                                                            if (wd != D2)
+                                                                wd->windowSize = OTHERS > 0 ? wd->windowSize * (1.F - H) / OTHERS : (1.F - H) / (C2->windowDatas.size() - 1);
+                                                        }
+                                                    }
+                                                    D2->windowSize = H;
+                                                    apply();
+                                                },
+                                                .checked = D && std::abs(D->windowSize - H) < 0.01F});
+                             }
+                             setMenuItems(std::move(sub));
+                         },
+                         .submenu = true});
+    }
+
+    if (STACKED) {
+        items.push_back({.label = "Own column", .action = [this, WDATA] {
+                             const auto D = WDATA.lock();
+                             const auto C = D ? D->column.lock() : nullptr;
+                             const auto T = D ? D->target.lock() : nullptr;
+                             if (!C || !T || C->windowDatas.size() < 2)
+                                 return;
+                             auto&      L   = m_layout->m_scrollingData;
+                             const auto NEW = L->add((int)L->idx(C));
+                             C->remove(T);
+                             NEW->add(D);
+                             NEW->columnWidth = m_layout->autoWidthForTarget(T);
+                             apply();
+                         }});
+    }
+
+    const auto IDX = LAYOUT->idx(COL);
+    if (IDX > 0) {
+        items.push_back({.label = "Move column left", .action = [this, WCOL] {
+                             auto&      L = m_layout->m_scrollingData;
+                             const auto I = L->idx(WCOL.lock());
+                             if (I > 0) {
+                                 std::swap(L->columns[I], L->columns[I - 1]);
+                                 apply();
+                             }
+                         }});
+    }
+    if (IDX >= 0 && IDX + 1 < (int64_t)LAYOUT->columns.size()) {
+        items.push_back({.label = "Move column right", .action = [this, WCOL] {
+                             auto&      L = m_layout->m_scrollingData;
+                             const auto I = L->idx(WCOL.lock());
+                             if (I >= 0 && I + 1 < (int64_t)L->columns.size()) {
+                                 std::swap(L->columns[I], L->columns[I + 1]);
+                                 apply();
+                             }
+                         }});
+    }
+
+    const auto setPin = [this, WCOL](ePinState pin) {
+        return [this, WCOL, pin] {
+            if (const auto C = WCOL.lock()) {
+                C->pinned = pin;
+                apply();
+            }
+        };
+    };
+    if (COL->pinned != PIN_LEFT)
+        items.push_back({.label = "Pin column left", .action = setPin(PIN_LEFT)});
+    if (COL->pinned != PIN_RIGHT)
+        items.push_back({.label = "Pin column right", .action = setPin(PIN_RIGHT)});
+    if (COL->pinned != PIN_NONE)
+        items.push_back({.label = "Unpin column", .action = setPin(PIN_NONE)});
+
+    items.push_back({.label = COL->collapsed ? "Expand column" : "Collapse column", .action = [this, WCOL] {
+                         const auto C = WCOL.lock();
+                         if (!C)
+                             return;
+                         if (C->collapsed) {
+                             C->collapsed = false;
+                             if (C->savedColumnWidth > 0)
+                                 C->columnWidth = C->savedColumnWidth;
+                             C->savedColumnWidth = 0;
+                         } else {
+                             C->savedColumnWidth = C->columnWidth;
+                             C->collapsed        = true;
+                         }
+                         apply();
+                     }});
+
+    return items;
+}
+
+// ------------------------------------------------------------- drawing ----
+
+SP<Render::ITexture> COverview::text(const std::string& str, int maxWidthPx) {
+    if (str.empty() || maxWidthPx < 8)
         return nullptr;
 
-    const auto KEY = title + "\n" + std::to_string(maxWidthPx);
-    if (const auto IT = m_titleCache.find(KEY); IT != m_titleCache.end())
+    const auto KEY = str + "\n" + std::to_string(maxWidthPx);
+    if (const auto IT = m_textCache.find(KEY); IT != m_textCache.end())
         return IT->second;
 
-    const auto MON   = monitor();
-    const int  SIZE  = (int)std::round(11 * (MON ? MON->m_scale : 1.F));
-    auto       tex   = g_pHyprRenderer->renderText(title, CHyprColor{1, 1, 1, 1}, SIZE, false, "", maxWidthPx, 500);
-    m_titleCache[KEY] = tex;
+    const auto MON    = monitor();
+    const int  SIZE   = (int)std::round(11 * (MON ? MON->m_scale : 1.F));
+    auto       tex    = g_pHyprRenderer->renderText(str, CHyprColor{1, 1, 1, 1}, SIZE, false, "", maxWidthPx, 500);
+    m_textCache[KEY] = tex;
     return tex;
+}
+
+void COverview::drawMenu(const PHLMONITOR& mon, float alpha) {
+    const float SCALE = mon->m_scale;
+    const auto  local = [&](const CBox& b) { return b.copy().translate(-mon->m_position).scale(SCALE).round(); };
+
+    const CBox BG = local(m_menuBox);
+    g_pHyprOpenGL->renderRect(BG.copy().expand(std::round(1 * SCALE)), CHyprColor{1, 1, 1, 0.10F * alpha}, {.round = (int)std::round(11 * SCALE)});
+    g_pHyprOpenGL->renderRect(BG, CHyprColor{0.10F, 0.10F, 0.12F, 0.97F * alpha}, {.round = (int)std::round(10 * SCALE)});
+
+    for (size_t i = 0; i < m_menuItems.size(); ++i) {
+        const auto& IT  = m_menuItems[i];
+        const CBox  ROW = local(m_menuItemBoxes[i]);
+
+        if (IT.separator) {
+            g_pHyprOpenGL->renderRect(CBox{ROW.x + 6 * SCALE, ROW.y + ROW.h / 2.0, ROW.w - 12 * SCALE, std::max(1.0, (double)std::round(SCALE))}.round(),
+                                      CHyprColor{1, 1, 1, 0.10F * alpha}, {});
+            continue;
+        }
+
+        if ((int)i == m_menuHover)
+            g_pHyprOpenGL->renderRect(ROW, accentColor(0.35F * alpha), {.round = (int)std::round(6 * SCALE)});
+
+        const double TEXT_X = ROW.x + (IT.header ? 8 : 12) * SCALE;
+        const auto   TEX    = text(IT.label, (int)(ROW.w - 44 * SCALE));
+        if (TEX) {
+            const CBox TB{TEXT_X, ROW.y + (ROW.h - TEX->m_size.y) / 2.0, TEX->m_size.x, TEX->m_size.y};
+            g_pHyprOpenGL->renderTexture(TEX, TB.copy().round(), {.a = (IT.header ? 0.55F : 1.F) * alpha});
+        }
+
+        // Trailing marker: chevron for submenus, dot for the current preset.
+        const std::string MARK = IT.submenu ? "›" : IT.checked ? "●" : "";
+        if (const auto MT = MARK.empty() ? nullptr : text(MARK, (int)(24 * SCALE))) {
+            const CBox MB{ROW.x + ROW.w - 12 * SCALE - MT->m_size.x, ROW.y + (ROW.h - MT->m_size.y) / 2.0, MT->m_size.x, MT->m_size.y};
+            g_pHyprOpenGL->renderTexture(MT, MB.copy().round(), {.a = 0.7F * alpha});
+        }
+    }
 }
 
 void COverview::draw(eRenderStage stage) {
@@ -662,59 +1117,93 @@ void COverview::draw(eRenderStage stage) {
     if (!MON)
         return;
 
-    const float ALPHA = overlayAlpha();
+    const float ALPHA   = overlayAlpha();
+    bool        animate = m_active ? ALPHA < 1.F : ALPHA > 0.F;
 
     if (stage == RENDER_PRE_WINDOWS) {
+        // Windows are about to be drawn: make sure every overview window is
+        // drawn scaled, not cropped. Any move/resize animation ending on a
+        // window (closing or moving a neighbour, focus changes...) clears this
+        // flag, so setting it once per placement isn't enough.
+        if (m_active) {
+            for (const auto& SLOT : m_slots) {
+                if (const auto WINDOW = windowOf(SLOT.data.lock()))
+                    WINDOW->m_animatingIn = true;
+            }
+        }
+
         // Dim the wallpaper behind the zoomed-out windows.
         g_pHyprOpenGL->renderRect(CBox{{}, MON->m_pixelSize}, CHyprColor{0, 0, 0, OV_DIM * ALPHA}, {});
-    } else if (stage == RENDER_POST_WINDOWS) {
-        const auto  HIGHLIGHT = m_hovered.lock() ? m_hovered.lock() : m_selected.lock();
-        const float SCALE     = MON->m_scale;
-
-        for (const auto& SLOT : m_slots) {
-            const auto DATA   = SLOT.data.lock();
-            const auto TARGET = DATA ? DATA->target.lock() : nullptr;
-            const auto WINDOW = TARGET ? TARGET->window() : nullptr;
-            if (!WINDOW)
-                continue;
-
-            // Follow the window's animated box so labels move with the zoom.
-            CBox box{WINDOW->positionAnimation()->value(), WINDOW->sizeAnimation()->value()};
-            box.translate(-MON->m_position).scale(SCALE).round();
-            if (box.w < 1 || box.h < 1)
-                continue;
-
-            const int ROUND = (int)std::round(WINDOW->rounding() * SCALE);
-
-            if (DATA == HIGHLIGHT && m_active) {
-                const int BORDER = (int)std::round(3 * SCALE);
-                g_pHyprOpenGL->renderBorder(box.copy().expand(BORDER + std::round(2 * SCALE)), Config::CGradientValueData{accentColor(ALPHA)},
-                                            {.round = ROUND + BORDER, .borderSize = BORDER, .a = ALPHA});
-            }
-
-            if (!g_config.overview_titles->value())
-                continue;
-
-            const auto TEX = titleTexture(WINDOW->m_title, (int)(box.w - 32 * SCALE));
-            if (!TEX)
-                continue;
-
-            const double PAD_X = std::round(10 * SCALE), PAD_Y = std::round(5 * SCALE);
-            const CBox   TEXT{box.x + (box.w - TEX->m_size.x) / 2.0, box.y + box.h - TEX->m_size.y - PAD_Y - std::round(12 * SCALE), TEX->m_size.x, TEX->m_size.y};
-            CBox         pill = TEXT.copy().expand(PAD_Y);
-            pill.x -= PAD_X - PAD_Y;
-            pill.w += 2 * (PAD_X - PAD_Y);
-            pill.round();
-
-            g_pHyprOpenGL->renderRect(pill, CHyprColor{0, 0, 0, 0.65F * ALPHA}, {.round = (int)(pill.h / 2)});
-            g_pHyprOpenGL->renderTexture(TEX, TEXT.copy().round(), {.a = ALPHA});
-        }
+        if (animate)
+            damage();
+        return;
     }
 
-    // Keep repainting while fading; drop the overlay once fully faded out.
-    if (m_active ? ALPHA < 1.F : ALPHA > 0.F)
+    if (stage != RENDER_POST_WINDOWS)
+        return;
+
+    const float SCALE    = MON->m_scale;
+    const auto  SELECTED = m_selected.lock();
+    const auto  DRAGGED  = m_dragMoved ? m_dragging.lock() : nullptr;
+    const auto  DRAG_WIN = windowOf(DRAGGED);
+    const CBox  DRAG_BOX = DRAG_WIN ? CBox{DRAG_WIN->positionAnimation()->value(), DRAG_WIN->sizeAnimation()->value()} : CBox{};
+
+    for (const auto& SLOT : m_slots) {
+        const auto DATA   = SLOT.data.lock();
+        const auto WINDOW = windowOf(DATA);
+        if (!WINDOW)
+            continue;
+
+        // Follow the window's drawn box so labels move with the zoom.
+        CBox global{WINDOW->positionAnimation()->value(), WINDOW->sizeAnimation()->value()};
+
+        if (DATA == SELECTED && m_active) {
+            // Slide the highlight from where it was to this window.
+            const CBox TARGET = global.copy().expand(4);
+            const int  MS     = msSince(m_highlightStart);
+            const CBox HL     = m_highlightFrom.empty() || MS >= OV_HIGHLIGHT_MS ? TARGET : lerpBox(m_highlightFrom, TARGET, easeOutCubic((double)MS / OV_HIGHLIGHT_MS));
+            if (MS < OV_HIGHLIGHT_MS)
+                animate = true;
+            m_highlightLast = HL;
+
+            const int  BORDER = (int)std::round(3 * SCALE);
+            const CBox LOCAL  = HL.copy().translate(-MON->m_position).scale(SCALE).round();
+            g_pHyprOpenGL->renderBorder(LOCAL.copy().expand(BORDER), Config::CGradientValueData{accentColor(ALPHA)},
+                                        {.round = (int)std::round(WINDOW->rounding() * SCALE) + BORDER, .borderSize = BORDER, .a = ALPHA});
+        }
+
+        if (!g_config.overview_titles->value())
+            continue;
+
+        // The dragged window is drawn above the others; their labels would
+        // otherwise show through it.
+        if (DRAG_WIN && DATA != DRAGGED && !global.intersection(DRAG_BOX).empty())
+            continue;
+
+        const CBox BOX = global.copy().translate(-MON->m_position).scale(SCALE).round();
+        const auto TEX = BOX.w > 1 ? text(WINDOW->m_title, (int)(BOX.w - 32 * SCALE)) : nullptr;
+        if (!TEX)
+            continue;
+
+        const double PAD_X = std::round(10 * SCALE), PAD_Y = std::round(5 * SCALE);
+        const CBox   TEXT{BOX.x + (BOX.w - TEX->m_size.x) / 2.0, BOX.y + BOX.h - TEX->m_size.y - PAD_Y - std::round(12 * SCALE), TEX->m_size.x, TEX->m_size.y};
+        CBox         pill = TEXT.copy().expand(PAD_Y);
+        pill.x -= PAD_X - PAD_Y;
+        pill.w += 2 * (PAD_X - PAD_Y);
+        pill.round();
+
+        g_pHyprOpenGL->renderRect(pill, CHyprColor{0, 0, 0, 0.65F * ALPHA}, {.round = (int)(pill.h / 2)});
+        g_pHyprOpenGL->renderTexture(TEX, TEXT.copy().round(), {.a = ALPHA});
+    }
+
+    if (m_menuOpen && m_active)
+        drawMenu(MON, ALPHA);
+
+    // Keep repainting while something animates; drop the overlay once it has
+    // fully faded out.
+    if (animate)
         damage();
-    else if (!m_active && stage == RENDER_POST_WINDOWS) {
+    else if (!m_active) {
         m_overlay = false;
         m_renderListener.reset();
     }
