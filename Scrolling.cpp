@@ -1622,6 +1622,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             m_scrollingData->remove(COL);
 
         col->add(WDATA);
+        col->columnWidth = autoWidthForTarget(WDATA->target.lock());
 
         m_scrollingData->recalculate();
     } else if (ARGS[0] == "swapcol") {
@@ -1942,6 +1943,23 @@ void CScrollingLayout::moveTargetTo(SP<Layout::ITarget> t, Math::eDirection dir,
     if (!COL)
         return;
 
+    // Pick the slot in the destination column from the window's own position,
+    // not the cursor: this path is keyboard-driven (drags go via movedTarget).
+    const double MID_Y    = DATA->layoutBox.y + DATA->layoutBox.h / 2.0;
+    const bool   WAS_ONLY = COL->windowDatas.size() == 1;
+
+    // A window that gets a column of its own keeps its old column's settings
+    // if it was alone there; a window split off a stack gets its auto width.
+    const auto inheritColumn = [&](const SP<SColumnData>& NEWCOL) {
+        if (WAS_ONLY) {
+            NEWCOL->columnWidth      = COL->columnWidth;
+            NEWCOL->savedColumnWidth = COL->savedColumnWidth;
+            NEWCOL->collapsed        = COL->collapsed;
+            NEWCOL->pinned           = COL->pinned;
+        } else
+            NEWCOL->columnWidth = autoWidthForTarget(t);
+    };
+
     if (dir == Math::DIRECTION_LEFT) {
         const auto PREVCOL = m_scrollingData->prev(COL);
 
@@ -1952,10 +1970,11 @@ void CScrollingLayout::moveTargetTo(SP<Layout::ITarget> t, Math::eDirection dir,
         if (!PREVCOL) {
             const auto NEWCOL = m_scrollingData->add(-1);
             NEWCOL->add(DATA);
+            inheritColumn(NEWCOL);
             m_scrollingData->centerOrFitCol(NEWCOL);
         } else {
             if (PREVCOL->windowDatas.size() > 0)
-                PREVCOL->add(DATA, PREVCOL->idxForHeight(g_pInputManager->getMouseCoordsInternal().y));
+                PREVCOL->add(DATA, PREVCOL->idxForHeight(MID_Y));
             else
                 PREVCOL->add(DATA);
             m_scrollingData->centerOrFitCol(PREVCOL);
@@ -1970,10 +1989,11 @@ void CScrollingLayout::moveTargetTo(SP<Layout::ITarget> t, Math::eDirection dir,
         if (!NEXTCOL) {
             const auto NEWCOL = m_scrollingData->add();
             NEWCOL->add(DATA);
+            inheritColumn(NEWCOL);
             m_scrollingData->centerOrFitCol(NEWCOL);
         } else {
             if (NEXTCOL->windowDatas.size() > 0)
-                NEXTCOL->add(DATA, NEXTCOL->idxForHeight(g_pInputManager->getMouseCoordsInternal().y));
+                NEXTCOL->add(DATA, NEXTCOL->idxForHeight(MID_Y));
             else
                 NEXTCOL->add(DATA);
             m_scrollingData->centerOrFitCol(NEXTCOL);
