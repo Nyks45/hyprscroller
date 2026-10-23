@@ -1048,9 +1048,20 @@ void CScrollingLayout::movedTarget(SP<Layout::ITarget> target, std::optional<Vec
     if (!target)
         return;
 
+    // Hyprland re-tiles a dropped window through setFloating(), which passes
+    // no focal point, so take the drop point from the drag that is ending.
+    // dragEnd() has already cleared the drag target by then, but the mode and
+    // wasDraggingWindow() stay set until it returns.
+    std::optional<Vector2D> drop = focalPoint;
+    if (!drop) {
+        const auto& DC = g_layoutManager->dragController();
+        if (DC && DC->mode() == MBIND_MOVE && DC->wasDraggingWindow())
+            drop = g_pInputManager->getMouseCoordsInternal();
+    }
+
     // Without a drop position, or before any columns exist, behave like a
-    // fresh insert next to the focused window (previous behaviour).
-    if (!focalPoint || m_scrollingData->columns.empty()) {
+    // fresh insert next to the focused window.
+    if (!drop || m_scrollingData->columns.empty()) {
         newTarget(target);
         return;
     }
@@ -1059,12 +1070,15 @@ void CScrollingLayout::movedTarget(SP<Layout::ITarget> target, std::optional<Vec
     // is the very first target to enter the layout via a drop.
     ensureConfig();
 
-    const Vector2D DROP = *focalPoint;
+    const Vector2D DROP = *drop;
 
-    // Find the scrollable column whose horizontal span contains the drop point.
-    // layoutBox and the drop point are both in global logical coordinates.
-    SP<SColumnData> dropCol;
-    for (const auto& COL : m_scrollingData->columns) {
+    // Over the middle of a column: stack into it at the slot under the drop
+    // point. Over a column's outer quarter, or a gap between columns: a new
+    // column on that side. layoutBox and DROP are global logical coordinates.
+    SP<SColumnData> stackCol;
+    int64_t         insertAfter = -2; // column index to insert a new column after
+    for (size_t i = 0; i < m_scrollingData->columns.size(); ++i) {
+        const auto& COL = m_scrollingData->columns[i];
         if (COL->windowDatas.empty())
             continue;
 
@@ -1075,32 +1089,51 @@ void CScrollingLayout::movedTarget(SP<Layout::ITarget> target, std::optional<Vec
             right = std::max(right, WD->layoutBox.x + WD->layoutBox.w);
         }
 
-        if (DROP.x >= left && DROP.x < right) {
-            dropCol = COL;
+        if (DROP.x < left) {
+            insertAfter = (int64_t)i - 1;
+            break;
+        }
+        if (DROP.x < right) {
+            const double EDGE = (right - left) / 4.0;
+            if (DROP.x < left + EDGE)
+                insertAfter = (int64_t)i - 1;
+            else if (DROP.x >= right - EDGE)
+                insertAfter = (int64_t)i;
+            else
+                stackCol = COL;
             break;
         }
     }
+    if (!stackCol && insertAfter == -2)
+        insertAfter = (int64_t)m_scrollingData->columns.size() - 1; // right of every column
 
-    // If the drop point isn't over any column, fall back to the default
-    // placement. This is also the safe path if focalPoint ever arrives in a
-    // different coordinate space than layoutBox: no regression vs. before.
-    if (!dropCol) {
-        newTarget(target);
-        return;
+    SP<SColumnData> col;
+    if (stackCol && !stackCol->collapsed) {
+        // Upper half of a window: above it; lower half: below it.
+        // add(t, after) inserts at index (after + 1).
+        col       = stackCol;
+        int after = (int)col->windowDatas.size() - 1;
+        for (size_t i = 0; i < col->windowDatas.size(); ++i) {
+            const auto& BOX = col->windowDatas[i]->layoutBox;
+            if (DROP.y < BOX.y + BOX.h) {
+                after = DROP.y < BOX.y + BOX.h / 2.0 ? (int)i - 1 : (int)i;
+                break;
+            }
+        }
+        col->add(target, after);
+        col->lastFocusedWindow = dataFor(target);
+    } else {
+        if (stackCol) // collapsed column: put it next to it instead
+            insertAfter = m_scrollingData->idx(stackCol);
+        col = m_scrollingData->add((int)insertAfter);
+        col->add(target);
+        col->columnWidth = autoWidthForTarget(target);
     }
 
-    // Insert into the resolved column at the vertical slot under the drop point.
-    // add(t, after) inserts at index (after + 1), so that's where the new
-    // window ends up.
-    const size_t afterIdx = dropCol->idxForHeight(DROP.y);
-    dropCol->add(target, (int)afterIdx);
-    if (afterIdx + 1 < dropCol->windowDatas.size())
-        dropCol->lastFocusedWindow = dropCol->windowDatas[afterIdx + 1];
-
     if (m_zenMode)
-        m_zenColumn = dropCol;
+        m_zenColumn = col;
 
-    m_scrollingData->centerOrFitCol(dropCol);
+    m_scrollingData->centerOrFitCol(col);
     m_scrollingData->recalculate();
 }
 
