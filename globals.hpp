@@ -35,6 +35,9 @@ struct SConfig {
     SP<Config::Values::CIntValue>    fullscreen_screen_sized;
     SP<Config::Values::CStringValue> new_window_placement;
     SP<Config::Values::CIntValue>    column_scroll;
+    SP<Config::Values::CFloatValue>  overview_zoom;
+    SP<Config::Values::CIntValue>    overview_titles;
+    SP<Config::Values::CIntValue>    overview_accent;
 };
 
 inline SConfig g_config;

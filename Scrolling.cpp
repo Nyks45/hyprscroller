@@ -1,4 +1,5 @@
 #include "Scrolling.hpp"
+#include "Overview.hpp"
 #include "globals.hpp"
 
 #include <algorithm>
@@ -662,37 +663,10 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
         }
     }
 
-    // Overview mode: flat thumbnail grid (Win+Tab style).
-    // All windows are arranged as equal-sized tiles in a grid that fills the
-    // screen, ignoring column structure. Navigation (focus l/r/u/d) still works
-    // in terms of the underlying column layout.
-    if (layout->m_overviewActive) {
-        // Collect all windows in layout order (column-major)
-        std::vector<SP<SScrollingWindowData>> allWindows;
-        for (const auto& COL : columns) {
-            for (const auto& WDATA : COL->windowDatas)
-                allWindows.push_back(WDATA);
-        }
-        if (allWindows.empty()) return;
-
-        constexpr double GAP  = 16.0;
-        const size_t     total = allWindows.size();
-        const size_t     gridCols = std::max(size_t{1}, (size_t)std::ceil(std::sqrt((double)total)));
-        const size_t     gridRows = (total + gridCols - 1) / gridCols;
-        const double     cellW    = std::max(1.0, (USABLE.w - GAP * (gridCols + 1)) / (double)gridCols);
-        const double     cellH    = std::max(1.0, (USABLE.h - GAP * (gridRows + 1)) / (double)gridRows);
-
-        for (size_t i = 0; i < allWindows.size(); ++i) {
-            const auto&  WDATA = allWindows[i];
-            const size_t row   = i / gridCols;
-            const size_t col   = i % gridCols;
-            const double x     = GAP + col * (cellW + GAP);
-            const double y     = GAP + row * (cellH + GAP);
-
-            WDATA->layoutBox = CBox{x, y, cellW, cellH}.translate(WORKAREA.pos());
-
-            applyLayoutBox(WDATA, forceInstant);
-        }
+    // Overview: windows sit at their zoomed-out slots (see Overview.cpp);
+    // re-target them so windows opening/closing meanwhile stay in place.
+    if (layout->m_overview && layout->m_overview->active()) {
+        layout->m_overview->apply(forceInstant);
         return;
     }
 
@@ -801,6 +775,7 @@ bool SScrollingLayoutData::visible(SP<SColumnData> c) {
 CScrollingLayout::CScrollingLayout() {
     m_scrollingData = makeShared<SScrollingLayoutData>(this);
     m_scrollingData->self = m_scrollingData;
+    m_overview = makeUnique<COverview>(this);
 }
 
 CScrollingLayout::~CScrollingLayout() {
@@ -926,9 +901,8 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
             if (ev.button != BTN_LEFT || ev.state != WL_POINTER_BUTTON_STATE_PRESSED)
                 return;
 
-            // Overview owns clicks while active (see m_overviewClickHook);
-            // don't also run click-to-center here.
-            if (m_overviewActive)
+            // The overview owns clicks while open; don't also run click-to-center.
+            if (m_overview->active())
                 return;
 
             auto parent = m_parent.lock();
@@ -2083,84 +2057,9 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         }
         m_focusHistoryNavigating = false;
     } else if (ARGS[0] == "overview_confirm") {
-        if (!m_overviewActive)
-            return {};
-
-        SP<SColumnData> focusedCol;
-        if (auto WDATA = focusedWindowData())
-            focusedCol = WDATA->column.lock();
-
-        m_overviewActive = false;
-        m_overviewClickHook.reset();
-
-        if (focusedCol)
-            m_scrollingData->centerOrFitCol(focusedCol);
-        else {
-            m_scrollingData->leftOffset = m_overviewSavedOffset;
-        }
-
-        m_scrollingData->recalculate(!g_config.overview_animate->value());
+        m_overview->confirm();
     } else if (ARGS[0] == "overview") {
-        if (!m_overviewActive) {
-            if (m_scrollingData->columns.empty())
-                return {};
-
-            // Save only the offset — column widths are not touched; the
-            // overview grid is rendered entirely inside recalculate().
-            m_overviewSavedOffset = m_scrollingData->leftOffset;
-            m_overviewActive = true;
-            m_scrollingData->recalculate(!g_config.overview_animate->value());
-
-            m_overviewClickHook = Event::bus()->m_events.input.mouse.button.listen([this](IPointer::SButtonEvent ev, Event::SCallbackInfo&) {
-                if (ev.state != WL_POINTER_BUTTON_STATE_PRESSED || !m_overviewActive)
-                    return;
-
-                const auto MOUSECOORDS = g_pInputManager->getMouseCoordsInternal();
-                auto parent = m_parent.lock();
-                SP<SColumnData>      clickedCol;
-                SP<Layout::ITarget>  clickedTarget;
-
-                if (parent && parent->space()) {
-                    for (auto& wt : parent->space()->targets()) {
-                        auto t = wt.lock();
-                        if (!t || !t->window()) continue;
-                        auto w = t->window();
-                        CBox box{w->positionAnimation()->value().x, w->positionAnimation()->value().y,
-                                 w->sizeAnimation()->value().x, w->sizeAnimation()->value().y};
-                        if (MOUSECOORDS.x >= box.x && MOUSECOORDS.x <= box.x + box.w &&
-                            MOUSECOORDS.y >= box.y && MOUSECOORDS.y <= box.y + box.h) {
-                            clickedTarget = t;
-                            auto WDATA = dataFor(t);
-                            if (WDATA)
-                                clickedCol = WDATA->column.lock();
-                            break;
-                        }
-                    }
-                }
-
-                // Don't reset m_overviewClickHook from inside its own callback;
-                // the listener goes inert via !m_overviewActive and is
-                // replaced or reset the next time overview is toggled.
-                m_overviewActive = false;
-
-                if (clickedCol)
-                    m_scrollingData->centerOrFitCol(clickedCol);
-                else {
-                    m_scrollingData->leftOffset = m_overviewSavedOffset;
-                        }
-
-                m_scrollingData->recalculate(!g_config.overview_animate->value());
-
-                if (clickedTarget)
-                    focusTargetUpdate(clickedTarget);
-            });
-
-        } else {
-            m_overviewActive = false;
-            m_overviewClickHook.reset();
-            m_scrollingData->leftOffset = m_overviewSavedOffset;
-            m_scrollingData->recalculate(!g_config.overview_animate->value());
-        }
+        m_overview->toggle();
     }
     return {};
 }

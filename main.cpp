@@ -43,12 +43,15 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_config.click_edge_right         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:click_edge_right", "right edge exclusion for clicks in px", 0);
     g_config.follow_hover             = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:follow_hover", "follow hover: 0=off 1=on with delay", 0);
     g_config.hover_delay_ms           = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:hover_delay_ms", "hover delay in ms before scroll", 500);
-    g_config.overview_animate         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:overview_animate", "animate overview transitions (0=instant, 1=animated)", 0);
+    g_config.overview_animate         = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:overview_animate", "animate overview transitions (0=instant, 1=animated)", 1);
     g_config.peek_width               = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:peek_width", "px of neighbouring columns kept visible at the sides", 0);
     g_config.stretch_to_fill          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:stretch_to_fill", "stretch columns to fill the screen when they are narrower than it", 0);
     g_config.fullscreen_screen_sized  = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:fullscreen_screen_sized", "fullscreen X11 windows that open at screen size (games) instead of tiling them", 0);
     g_config.new_window_placement     = makeShared<Config::Values::CStringValue>("plugin:hyprscrolling:new_window_placement", "where new windows open: column (own column) or stack (focused column)", "column");
     g_config.column_scroll            = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:column_scroll", "columns scroll vertically; window heights are independent fractions of the screen", 0);
+    g_config.overview_zoom            = makeShared<Config::Values::CFloatValue>("plugin:hyprscrolling:overview_zoom", "maximum overview zoom (it zooms out further if needed to fit everything)", 0.5);
+    g_config.overview_titles          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:overview_titles", "show window titles in the overview", 1);
+    g_config.overview_accent          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:overview_accent", "overview highlight colour, 0xAARRGGBB", 0xff89b4fa);
 
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.fullscreen_on_one_column);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.column_width);
@@ -75,6 +78,9 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.fullscreen_screen_sized);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.new_window_placement);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.column_scroll);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_config.overview_zoom);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_config.overview_titles);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_config.overview_accent);
 
     bool success = HyprlandAPI::addTiledAlgo(PHANDLE, "hyprscrolling", &typeid(CScrollingLayout), []() -> UP<Layout::ITiledAlgorithm> {
         return makeUnique<CScrollingLayout>();

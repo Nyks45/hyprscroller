@@ -12,7 +12,7 @@ else
   error('Could not configure current C++ compiler (' + cpp_compiler.get_id() + ' ' + cpp_compiler.version() + ') with required C++ standard (C++23)')
 endif
 
-src = ['main.cpp', 'Scrolling.cpp']
+src = ['main.cpp', 'Scrolling.cpp', 'Overview.cpp']
 
 shared_module(meson.project_name(), src,
   dependencies: [

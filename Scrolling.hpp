@@ -10,6 +10,7 @@
 #include <hyprland/src/config/shared/ConfigErrors.hpp>
 
 class CScrollingLayout;
+class COverview;
 struct SColumnData;
 
 enum ePinState : uint8_t {
@@ -165,10 +166,8 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     bool                                             m_zenMode = false;
     SP<SColumnData>                                  m_zenColumn;
 
-    // Overview mode
-    bool                                             m_overviewActive = false;
-    float                                            m_overviewSavedOffset = 0;
-    CHyprSignalListener                              m_overviewClickHook;
+    // Overview (zoomed-out strip, see Overview.hpp)
+    UP<COverview>                                    m_overview;
 
     SP<SScrollingWindowData> findBestNeighbor(SP<SScrollingWindowData> pCurrent, SP<SColumnData> pTargetCol);
     SP<SScrollingWindowData> dataFor(SP<Layout::ITarget> t);
@@ -197,4 +196,5 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     void                     updateHoverTick();
 
     friend struct SScrollingLayoutData;
+    friend class COverview;
 };

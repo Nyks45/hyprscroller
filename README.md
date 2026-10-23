@@ -15,7 +15,7 @@ Based on the `hyprscrolling` plugin from [hyprwm/hyprland-plugins](https://githu
 - Column collapse/expand toggle
 - Zen mode — show only the focused column (follows focus and new windows)
 - Optional vertical scrolling within columns (`column_scroll`), niri-style
-- Win+Tab-style overview grid (flat tile view with click-to-focus and keyboard navigation)
+- niri-style overview: the whole strip zooms out (animated, no window resizing) so every column and stacked window is visible; pick with click/Enter, navigate with keys/wheel, drag windows to rearrange
 - Focus history (back/forward navigation)
 - Per-window-class automatic column width rules
 - Column-level workspace movement
@@ -99,7 +99,10 @@ All options live under `plugin:hyprscrolling:`, i.e. `plugin = { hyprscrolling =
 | `auto_width_rules` | string | *(empty)* | Per-class automatic column width: `firefox:0.7, kitty:0.3` |
 | `click_edge_left` | int (px) | `0` | Extra fixed margin at the left monitor edge where clicks/hover don't scroll. Usually not needed: clicks and hover on the shell (reserved bar areas, and panels/drawers/notifications in the top/overlay layers) are detected and ignored automatically |
 | `click_edge_right` | int (px) | `0` | Same for the right monitor edge |
-| `overview_animate` | bool | `false` | Animate overview enter/exit transitions. Leave off on iGPUs for an instant snap |
+| `overview_animate` | bool | `true` | Animate the overview zoom (uses your `windowsMove` animation curve and speed) |
+| `overview_zoom` | float (0.1–1) | `0.5` | Largest overview scale. It zooms out further when needed so every window fits |
+| `overview_titles` | bool | `true` | Show window titles on the overview thumbnails |
+| `overview_accent` | int (0xAARRGGBB) | `0xff89b4fa` | Colour of the highlight around the hovered/selected window in the overview |
 | `peek_width` | int (px) | `0` | Keep this much of the neighbouring columns visible at each side, so off-screen windows stay visible and can be hovered/clicked. Column widths are fractions of the usable width minus the two peek strips |
 | `stretch_to_fill` | bool | `false` | When the columns together are narrower than the screen, stretch them to fill it instead of centring them |
 | `new_window_placement` | string | `column` | Where new windows open: `column` = in their own new column next to the focused one, `stack` = in the focused column, below the focused window |
@@ -204,8 +207,8 @@ Send commands with the layout message dispatcher: `hl.dsp.layout("<message>")` i
 | Message | Description |
 |---|---|
 | `zen` | Show only the focused column (focus mode). Follows focus and new windows; toggle to exit |
-| `overview` | Toggle Win+Tab-style flat grid of all windows. Click a window to focus it and restore the layout |
-| `overview_confirm` | Confirm the currently focused window in overview and exit (use with `focus l/r/u/d` for keyboard navigation) |
+| `overview` | Toggle the overview: the workspace zooms out to show every column and window in place. Click a window (or move the highlight with arrows/hjkl/wheel and press Enter/Space) to focus it and zoom back in; Esc, Tab or a click on empty space closes. Drag a window onto another column to stack it there, or near a column's edge / past the ends to give it its own column |
+| `overview_confirm` | Pick the highlighted window and close the overview |
 | `pin left` | Pin current column to the left screen edge (stays fixed while scrolling) |
 | `pin right` | Pin current column to the right screen edge |
 | `unpin` | Remove pin from current column |
