@@ -33,7 +33,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_config.follow_debounce_ms       = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:follow_debounce_ms", "follow debounce ms", 0);
     g_config.focus_wrap               = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:focus_wrap", "wrap focus at edges", 1);
     g_config.center_active_column     = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:center_active_column", "always center active column", 0);
-    g_config.explicit_column_widths   = makeShared<Config::Values::CStringValue>("plugin:hyprscrolling:explicit_column_widths", "explicit column widths for cycling", "0.333,0.5,0.667,1.0");
+    g_config.explicit_column_widths   = makeShared<Config::Values::CStringValue>("plugin:hyprscrolling:explicit_column_widths", "explicit column widths for cycling (overrides column_widths when set)", "");
     g_config.column_widths            = makeShared<Config::Values::CStringValue>("plugin:hyprscrolling:column_widths", "column widths for cycling (alias)", "0.333,0.5,0.667,1.0");
     g_config.window_heights           = makeShared<Config::Values::CStringValue>("plugin:hyprscrolling:window_heights", "window heights for cycling", "0.333,0.5,0.667,1.0");
     g_config.collapsed_width          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:collapsed_width", "collapsed column width in px", 30);

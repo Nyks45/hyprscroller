@@ -2186,7 +2186,8 @@ void CScrollingLayout::updateHoverTick() {
 }
 
 void CScrollingLayout::parseConfig() {
-    // Parse column widths from explicit_column_widths (fall back to column_widths alias)
+    // Parse column widths from explicit_column_widths (fall back to column_widths alias).
+    // explicit_column_widths defaults to empty so that the alias can take effect.
     std::string widthsStr = g_config.explicit_column_widths->value();
     if (widthsStr.empty())
         widthsStr = g_config.column_widths->value();
