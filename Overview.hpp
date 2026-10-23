@@ -112,6 +112,15 @@ class COverview {
     // until their move/resize animation ends, then it's cleared: Hyprland
     // won't, and leaving it set would squash every later shrink animation.
     std::vector<PHLWINDOWREF>                              m_restoring;
+    // Lives as long as this object; deferred callbacks that aren't tied to an
+    // open session (opening after leaving fullscreen) check it.
+    SP<bool>                                               m_alive = makeShared<bool>(true);
+
+    // Window that was fullscreen (or maximized) when the overview opened, and
+    // its modes; it is restored if it's picked again (or nothing else is).
+    PHLWINDOWREF                                           m_fullscreenWindow;
+    int8_t                                                 m_fullscreenInternal = 0;
+    int8_t                                                 m_fullscreenClient   = 0;
 
     // One progress value (0 -> 1, windowsMove curve) drives every window from
     // its box when the animation (re)started to its slot.

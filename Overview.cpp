@@ -324,8 +324,26 @@ void COverview::open() {
     if (!PARENT || !PARENT->space())
         return;
     const auto WS = PARENT->space()->workspace();
-    if (!WS || m_layout->m_scrollingData->columns.empty() || Fullscreen::controller()->hasFullscreen(WS, true))
+    if (!WS || m_layout->m_scrollingData->columns.empty())
         return;
+
+    // A fullscreen/maximized window covers the strip: leave fullscreen first
+    // (remembering it, to restore on close) and open once that has settled.
+    // Hyprland tells the client its tiled size from a deferred callback when
+    // the resize starts; opening in the same tick would warp the size goal
+    // to a thumbnail first and the client would be told that instead.
+    if (const auto FSW = Fullscreen::controller()->getFullscreenWindow(WS, true)) {
+        const auto MODES     = Fullscreen::controller()->getFullscreenModes(FSW);
+        m_fullscreenWindow   = FSW;
+        m_fullscreenInternal = MODES.internal;
+        m_fullscreenClient   = MODES.client;
+        Fullscreen::controller()->setFullscreenMode(FSW, Fullscreen::FSMODE_NONE, Fullscreen::FSMODE_NONE);
+        g_pEventLoopManager->doLater([this, ALIVE = WP<bool>{m_alive}] {
+            if (ALIVE.lock())
+                open();
+        });
+        return;
+    }
 
     const auto FOCUSED = m_layout->focusedWindowData();
     m_initialFocus     = FOCUSED ? FOCUSED->target : WP<Layout::ITarget>{};
@@ -667,6 +685,12 @@ void COverview::close(SP<SScrollingWindowData> pick) {
 
     if (pick && target)
         m_layout->focusTargetUpdate(target);
+
+    // The window that was fullscreen when we opened goes back to fullscreen
+    // if it's the one we zoom back to; picking another window leaves it tiled.
+    if (const auto FSW = m_fullscreenWindow.lock(); FSW && FSW->m_isMapped && target && target->window() == FSW)
+        Fullscreen::controller()->setFullscreenMode(FSW, (Fullscreen::eFullscreenMode)m_fullscreenInternal, (Fullscreen::eFullscreenMode)m_fullscreenClient);
+    m_fullscreenWindow.reset();
 
     damage();
 }
