@@ -72,6 +72,10 @@ constexpr float MAX_ROW_HEIGHT   = 1.F;
 // well outside any realistic multi-monitor logical coordinate space.
 constexpr double OFFSCREEN_COORD = -100000.0;
 
+// Runtime override of new_window_placement set by 'placement' layout messages:
+// -1 = use config, 0 = new column, 1 = stack. Shared by all workspaces.
+static int g_placementOverride = -1;
+
 // An X11 window that asked to be at least as large as its monitor
 // (borderless-fullscreen games and the like). Override-redirect windows are
 // menus/tooltips, never layout targets worth fullscreening.
@@ -913,10 +917,17 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
     SP<SScrollingWindowData> droppingData   = droppingOn ? dataFor(droppingOn) : nullptr;
     SP<SColumnData>          droppingColumn = droppingData ? droppingData->column.lock() : nullptr;
 
-    const auto idx = droppingColumn ? m_scrollingData->idx(droppingColumn) : -1;
-    auto       col = idx == -1 ? m_scrollingData->add() : m_scrollingData->add(idx);
-    col->add(target);
-    col->columnWidth = autoWidthForTarget(target);
+    SP<SColumnData> col;
+    if (droppingColumn && !droppingColumn->collapsed && stackNewWindows()) {
+        // new_window_placement = stack: open below the focused window, in its column.
+        col = droppingColumn;
+        col->add(target, (int)col->idx(droppingOn));
+    } else {
+        const auto idx = droppingColumn ? m_scrollingData->idx(droppingColumn) : -1;
+        col            = idx == -1 ? m_scrollingData->add() : m_scrollingData->add(idx);
+        col->add(target);
+        col->columnWidth = autoWidthForTarget(target);
+    }
     m_scrollingData->centerOrFitCol(col);
 
     // A new window in zen mode would otherwise be parked off-screen.
@@ -1780,6 +1791,19 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         std::swap(m_scrollingData->columns[current_idx], m_scrollingData->columns[target_idx]);
         m_scrollingData->centerOrFitCol(CURRENT_COL);
         m_scrollingData->recalculate();
+    } else if (ARGS[0] == "placement") {
+        // placement column|stack|toggle: where new windows open, for all workspaces.
+        if (ARGS[1] == "column")
+            g_placementOverride = 0;
+        else if (ARGS[1] == "stack")
+            g_placementOverride = 1;
+        else if (ARGS[1] == "toggle")
+            g_placementOverride = stackNewWindows() ? 0 : 1;
+        else
+            return {};
+
+        HyprlandAPI::addNotification(PHANDLE, std::string{"[hyprscrolling] New windows: "} + (stackNewWindows() ? "stack in column" : "new column"),
+                                     CHyprColor{0.4, 0.6, 1.0, 1.0}, 1500);
     } else if (ARGS[0] == "togglefit") {
         m_fitMethodOverride = (effectiveFitMethod() + 1) % 3;
 
@@ -2258,6 +2282,12 @@ float CScrollingLayout::autoWidthForTarget(SP<Layout::ITarget> target) {
     return defaultColumnWidth();
 }
 
+bool CScrollingLayout::stackNewWindows() const {
+    if (g_placementOverride >= 0)
+        return g_placementOverride == 1;
+    return g_config.new_window_placement->value() == "stack";
+}
+
 int CScrollingLayout::effectiveFitMethod() const {
     return m_fitMethodOverride >= 0 ? m_fitMethodOverride : (int)g_config.focus_fit_method->value();
 }
@@ -2378,9 +2408,11 @@ void CScrollingLayout::parseConfig() {
         }
     }
 
-    // A config reload re-applies focus_fit_method, dropping any togglefit override,
-    // and re-positions the view so changed fit/width options show immediately.
+    // A config reload re-applies focus_fit_method and new_window_placement,
+    // dropping togglefit/placement overrides, and re-positions the view so
+    // changed fit/width options show immediately.
     m_fitMethodOverride = -1;
+    g_placementOverride = -1;
     if (const auto WDATA = focusedWindowData()) {
         m_scrollingData->centerOrFitCol(WDATA->column.lock());
         m_scrollingData->recalculate();

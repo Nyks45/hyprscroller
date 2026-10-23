@@ -180,6 +180,8 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
 
     float                    defaultColumnWidth();
     int                      effectiveFitMethod() const;
+    // Whether new windows open in the focused column (new_window_placement / placement msg).
+    bool                     stackNewWindows() const;
     void                     parseConfig();
     // Registers the per-tick hover listener only while follow_hover is on,
     // and tears it down otherwise. Avoids a global tick callback per layout

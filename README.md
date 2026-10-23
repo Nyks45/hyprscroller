@@ -101,9 +101,10 @@ All options live under `plugin:hyprscrolling:`, i.e. `plugin = { hyprscrolling =
 | `overview_animate` | bool | `false` | Animate overview enter/exit transitions. Leave off on iGPUs for an instant snap |
 | `peek_width` | int (px) | `0` | Keep this much of the neighbouring columns visible at each side, so off-screen windows stay visible and can be hovered/clicked. Column widths are fractions of the usable width minus the two peek strips |
 | `stretch_to_fill` | bool | `false` | When the columns together are narrower than the screen, stretch them to fill it instead of centring them |
+| `new_window_placement` | string | `column` | Where new windows open: `column` = in their own new column next to the focused one, `stack` = in the focused column, below the focused window |
 | `fullscreen_screen_sized` | bool | `false` | Make X11 windows that open asking for the full screen size (borderless games and the like) fullscreen instead of squeezing them into a column. Windows that request fullscreen are always honoured |
 
-A config reload resets a `togglefit` override back to `focus_fit_method`.
+A config reload resets `togglefit` and `placement` overrides back to `focus_fit_method` and `new_window_placement`.
 
 ### Example
 
@@ -169,6 +170,7 @@ Send commands with the layout message dispatcher: `hl.dsp.layout("<message>")` i
 |---|---|
 | `movewindowto l/r/u/d` | Move window to adjacent column/stack, keeping its vertical position. Moving past the first/last column gives the window its own column |
 | `promote` | Promote window to its own new column |
+| `placement column/stack/toggle` | Switch where new windows open (see `new_window_placement`) on all workspaces until the next config reload. Shows a short notification |
 
 ### Column Operations
 
@@ -227,6 +229,7 @@ hl.bind("SUPER + SHIFT + L", lm("movewindowto r"))
 hl.bind("SUPER + SHIFT + K", lm("movewindowto u"))
 hl.bind("SUPER + SHIFT + J", lm("movewindowto d"))
 hl.bind("SUPER + P", lm("promote"))
+hl.bind("SUPER + J", lm("placement toggle")) -- new windows: own column <-> stack
 
 -- Column resize
 hl.bind("SUPER + equal", lm("colresize +0.05"))
