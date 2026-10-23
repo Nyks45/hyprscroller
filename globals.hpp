@@ -32,6 +32,7 @@ struct SConfig {
     SP<Config::Values::CIntValue>    overview_animate;
     SP<Config::Values::CIntValue>    peek_width;
     SP<Config::Values::CIntValue>    stretch_to_fill;
+    SP<Config::Values::CIntValue>    fullscreen_screen_sized;
 };
 
 inline SConfig g_config;

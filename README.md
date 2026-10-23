@@ -101,6 +101,7 @@ All options live under `plugin:hyprscrolling:`, i.e. `plugin = { hyprscrolling =
 | `overview_animate` | bool | `false` | Animate overview enter/exit transitions. Leave off on iGPUs for an instant snap |
 | `peek_width` | int (px) | `0` | Keep this much of the neighbouring columns visible at each side, so off-screen windows stay visible and can be hovered/clicked. Column widths are fractions of the usable width minus the two peek strips |
 | `stretch_to_fill` | bool | `false` | When the columns together are narrower than the screen, stretch them to fill it instead of centring them |
+| `fullscreen_screen_sized` | bool | `false` | Make X11 windows that open asking for the full screen size (borderless games and the like) fullscreen instead of squeezing them into a column. Windows that request fullscreen are always honoured |
 
 A config reload resets a `togglefit` override back to `focus_fit_method`.
 
@@ -122,6 +123,7 @@ hl.config({
             auto_width_rules         = "firefox:0.7, kitty:0.3, code-oss:0.6",
             peek_width               = 120,
             stretch_to_fill          = true,
+            fullscreen_screen_sized  = true,
         },
     },
 })
@@ -142,6 +144,7 @@ plugin {
         auto_width_rules = firefox:0.7, kitty:0.3, code-oss:0.6
         peek_width = 120
         stretch_to_fill = true
+        fullscreen_screen_sized = true
     }
 }
 ```

@@ -26,6 +26,10 @@
 #include <hyprland/src/desktop/state/GlobalWindowController.hpp>
 #include <hyprland/src/output/Monitor.hpp>
 #include <hyprland/src/desktop/Workspace.hpp>
+#include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
+#include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
+#include <hyprland/src/managers/fullscreen/handler/FullscreenHandler.hpp>
+#include <hyprland/src/xwayland/XSurface.hpp>
 
 #include <hyprutils/string/VarList.hpp>
 #include <hyprutils/string/ConstVarList.hpp>
@@ -67,6 +71,37 @@ constexpr float MAX_ROW_HEIGHT   = 1.F;
 // Coordinate used to park hidden windows (e.g. non-zen columns in zen mode)
 // well outside any realistic multi-monitor logical coordinate space.
 constexpr double OFFSCREEN_COORD = -100000.0;
+
+// An X11 window that asked to be at least as large as its monitor
+// (borderless-fullscreen games and the like). Override-redirect windows are
+// menus/tooltips, never layout targets worth fullscreening.
+static bool opensAtScreenSize(const PHLWINDOW& w) {
+    if (!w->m_isX11 || w->isX11OverrideRedirect())
+        return false;
+
+    const auto XSURF = w->m_xwaylandSurface.lock();
+    const auto PMON  = w->m_monitor.lock();
+    if (!XSURF || !PMON)
+        return false;
+
+    const auto MON    = PMON->logicalBox().size();
+    const auto covers = [&MON](double width, double height) { return width >= MON.x - 1 && height >= MON.y - 1; };
+
+    // By the time the layout sees the window XWayland has usually configured
+    // it already, so m_geometry alone misses most cases. WM_NORMAL_HINTS keeps
+    // the size the client asked for, and a minimum size can rule out tiling.
+    if (covers(XSURF->m_geometry.w, XSURF->m_geometry.h))
+        return true;
+
+    if (const auto* HINTS = XSURF->m_sizeHints.get()) {
+        if ((HINTS->flags & (XCB_ICCCM_SIZE_HINT_US_SIZE | XCB_ICCCM_SIZE_HINT_P_SIZE)) && covers(HINTS->width, HINTS->height))
+            return true;
+        if ((HINTS->flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) && covers(HINTS->min_width, HINTS->min_height))
+            return true;
+    }
+
+    return false;
+}
 
 // Push a window's layoutBox to its target. Windows coming back from being
 // parked off-screen are warped, so they don't fly in from OFFSCREEN_COORD.
@@ -448,6 +483,14 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
 
     auto parent = layout->m_parent.lock();
     if (!parent || !parent->space()) {
+        return;
+    }
+
+    // Like Hyprland's built-in layouts: while a window covers the workspace
+    // (fullscreen/maximized), let the fullscreen handler own geometry instead
+    // of pushing column boxes onto the targets.
+    if (const auto WS = parent->space()->workspace(); WS && Fullscreen::controller()->hasFullscreen(WS, true)) {
+        layout->m_defaultFullscreenHandler->syncTargetSizeAndPosition();
         return;
     }
 
@@ -881,6 +924,19 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
         m_zenColumn = col;
 
     m_scrollingData->recalculate();
+
+    // Games and borderless apps often open an X11 window at screen size
+    // without requesting fullscreen. Don't squeeze those into a column: make
+    // them fullscreen. Hyprland settles a window's initial fullscreen state
+    // during map, after this call, so apply it once mapping has finished.
+    if (const auto W = target->window(); g_config.fullscreen_screen_sized->value() && W && W->m_firstMap && opensAtScreenSize(W)) {
+        g_pEventLoopManager->doLater([WREF = PHLWINDOWREF{W}] {
+            const auto WIN = WREF.lock();
+            if (!WIN || !WIN->m_isMapped || Fullscreen::controller()->isFullscreen(WIN))
+                return;
+            Fullscreen::controller()->setFullscreenMode(WIN, Fullscreen::FSMODE_FULLSCREEN, Fullscreen::FSMODE_FULLSCREEN);
+        });
+    }
 }
 
 void CScrollingLayout::movedTarget(SP<Layout::ITarget> target, std::optional<Vector2D> focalPoint) {
