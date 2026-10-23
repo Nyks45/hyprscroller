@@ -910,17 +910,17 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
     // doesn't restart the layout animation mid-flight.
     auto nextFocus = getNextCandidate(target);
 
-    if (!m_scrollingData->next(COL)) {
-        // move the view if this is the last column
-        const auto   USABLE       = usableArea();
-        const double COLLAPSED_PX = g_config.collapsed_width->value();
-        m_scrollingData->leftOffset -= COL->collapsed ? COLLAPSED_PX : USABLE.w * COL->columnWidth;
-    }
+    // Measure before removal: colWidth depends on the column count.
+    const bool   WAS_LAST = !m_scrollingData->next(COL);
+    const double COL_W    = COL->pinned == PIN_NONE ? m_scrollingData->colWidth(COL, usableArea().w) : 0.0;
 
     COL->remove(target);
 
-    // Remove empty columns
+    // Remove empty columns, and move the view back if it was the last one.
+    // A column that still holds windows keeps its width, so the view stays.
     if (COL->windowDatas.empty()) {
+        if (WAS_LAST)
+            m_scrollingData->leftOffset -= COL_W;
         m_scrollingData->remove(COL);
     }
 
