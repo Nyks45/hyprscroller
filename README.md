@@ -2,9 +2,9 @@
 
 A scrolling (column-based) layout plugin for [Hyprland](https://hyprland.org/).
 
-Inspired by [hyprscroller](https://github.com/dawsers/hyprscroller) (MIT) — rebuilt from scratch because upstream wasn't being updated, with extra features added on top. The Hyprland API and initial implementation were developed with AI assistance.
+Based on the `hyprscrolling` plugin from [hyprwm/hyprland-plugins](https://github.com/hyprwm/hyprland-plugins) (BSD-3-Clause), ported to the Hyprland 0.56 API and extended with extra features. The idea goes back to [hyprscroller](https://github.com/dawsers/hyprscroller) by dawsers. The Hyprland API port and parts of the implementation were developed with AI assistance. See [LICENSE](./LICENSE) for which license applies to what.
 
-> **Work in progress.** Core functionality is stable and daily-driven.
+> **Work in progress.** Core functionality is stable and daily-driven. Built and tested against Hyprland 0.56.2.
 
 ---
 
@@ -13,7 +13,7 @@ Inspired by [hyprscroller](https://github.com/dawsers/hyprscroller) (MIT) — re
 - Column-based scrolling layout (like PaperWM / Scroller)
 - Column pinning to left/right screen edge
 - Column collapse/expand toggle
-- Zen mode — show only the focused column
+- Zen mode — show only the focused column (follows focus and new windows)
 - Win+Tab-style overview grid (flat tile view with click-to-focus and keyboard navigation)
 - Focus history (back/forward navigation)
 - Per-window-class automatic column width rules
@@ -25,13 +25,22 @@ Inspired by [hyprscroller](https://github.com/dawsers/hyprscroller) (MIT) — re
 
 ## Installation
 
-### Build from source
+The plugin must be built against the exact Hyprland version you run. Rebuild it after every Hyprland update.
 
-**Requirements:** `hyprland`, `libdrm`, `libinput`, `libudev`, `pangocairo`, `pixman-1`, `wayland-server`, `xkbcommon`
+### With hyprpm
 
 ```bash
-git clone https://github.com/kuroiko0429/hyprscrolling
-cd hyprscrolling
+hyprpm add https://github.com/Nyks45/hyprscroller
+hyprpm enable hyprscrolling
+```
+
+### Build from source
+
+**Requirements:** `hyprland` (headers), `libdrm`, `libinput`, `libudev`, `pangocairo`, `pixman-1`, `wayland-server`, `xkbcommon`
+
+```bash
+git clone https://github.com/Nyks45/hyprscroller
+cd hyprscroller
 make
 ```
 
@@ -39,25 +48,39 @@ This produces `hyprscrolling.so` in the project directory.
 
 ### Load the plugin
 
-Add to your `hyprland.conf`:
+Lua config (`hyprland.lua`, Hyprland 0.56+):
+
+```lua
+hl.plugin.load("/path/to/hyprscroller/hyprscrolling.so")
+
+hl.config({
+    general = {
+        layout = "hyprscrolling",
+    },
+})
+```
+
+hyprlang config (`hyprland.conf`):
 
 ```
-plugin = /path/to/hyprscrolling.so
+plugin = /path/to/hyprscroller/hyprscrolling.so
 general {
     layout = hyprscrolling
 }
 ```
 
+To try it in a running session without editing your config: `hyprctl plugin load /path/to/hyprscrolling.so`.
+
 ---
 
 ## Configuration
 
-All options go inside `plugin { hyprscrolling { ... } }` in your Hyprland config.
+All options live under `plugin:hyprscrolling:`, i.e. `plugin = { hyprscrolling = { ... } }` in Lua or `plugin { hyprscrolling { ... } }` in hyprlang.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `column_width` | float (0–1) | `0.5` | Default column width as a fraction of monitor width |
-| `window_default_height` | float (0–1) | `1.0` | Default height for new windows in a column (1.0 = equal split) |
+| `window_default_height` | float (0–1) | `1.0` | Height of a new window in a column. `1.0` splits the column equally; smaller values give the new window that share, never squeezing others below 10% |
 | `fullscreen_on_one_column` | bool | `false` | If there's only one column, make it fullscreen |
 | `focus_fit_method` | int | `0` | Column scroll behaviour on focus: `0` = center, `1` = fit into view, `2` = gap-free center |
 | `follow_focus` | int | `1` | `0` = off, `1` = scroll on keyboard/programmatic focus, `2` = scroll on all focus including mouse hover (immediately, no timer) |
@@ -67,17 +90,40 @@ All options go inside `plugin { hyprscrolling { ... } }` in your Hyprland config
 | `hover_delay_ms` | int | `500` | Delay in ms before a hover triggers scrolling |
 | `focus_wrap` | bool | `true` | Wrap focus at column/window edges |
 | `center_active_column` | bool | `false` | Always scroll to center the focused column after every focus change |
-| `explicit_column_widths` | string | `0.333,0.5,0.667,1.0` | Comma-separated preset widths for `colresize +conf` / `-conf` cycling |
-| `column_widths` | string | `0.333,0.5,0.667,1.0` | Alias for `explicit_column_widths` |
+| `column_widths` | string | `0.333,0.5,0.667,1.0` | Comma-separated preset widths for `colresize +conf` / `-conf` cycling |
+| `explicit_column_widths` | string | *(empty)* | Same as `column_widths`; takes precedence when set |
 | `window_heights` | string | `0.333,0.5,0.667,1.0` | Comma-separated preset heights for `rowresize +conf` / `-conf` cycling |
 | `collapsed_width` | int (px) | `30` | Width of a collapsed column in pixels |
 | `focus_history` | bool | `true` | Enable focus history for `focusback` / `focusfwd` |
-| `auto_width_rules` | string | `` | Per-class automatic column width: `firefox:0.7, kitty:0.3` |
-| `click_edge_left` | int (px) | `90` | Cursor x distance from left monitor edge that suppresses click-to-scroll |
-| `click_edge_right` | int (px) | `60` | Cursor x distance from right monitor edge that suppresses click-to-scroll |
-| `overview_animate` | bool | `true` | Animate overview enter/exit transitions. Disable on iGPUs for instant snap |
+| `auto_width_rules` | string | *(empty)* | Per-class automatic column width: `firefox:0.7, kitty:0.3` |
+| `click_edge_left` | int (px) | `0` | Clicks/hover within this distance of the left monitor edge don't scroll (e.g. where a side bar sits) |
+| `click_edge_right` | int (px) | `0` | Same for the right monitor edge |
+| `overview_animate` | bool | `false` | Animate overview enter/exit transitions. Leave off on iGPUs for an instant snap |
+
+A config reload resets a `togglefit` override back to `focus_fit_method`.
 
 ### Example
+
+Lua:
+
+```lua
+hl.config({
+    plugin = {
+        hyprscrolling = {
+            column_width             = 0.5,
+            fullscreen_on_one_column = false,
+            focus_fit_method         = 0,
+            follow_focus             = 1,
+            column_widths            = "0.333, 0.5, 0.667, 1.0",
+            collapsed_width          = 30,
+            focus_history            = true,
+            auto_width_rules         = "firefox:0.7, kitty:0.3, code-oss:0.6",
+        },
+    },
+})
+```
+
+hyprlang:
 
 ```
 plugin {
@@ -85,9 +131,8 @@ plugin {
         column_width = 0.5
         fullscreen_on_one_column = false
         focus_fit_method = 0
-        follow_focus = true
-        follow_debounce_ms = 0
-        explicit_column_widths = 0.333, 0.5, 0.667, 1.0
+        follow_focus = 1
+        column_widths = 0.333, 0.5, 0.667, 1.0
         collapsed_width = 30
         focus_history = true
         auto_width_rules = firefox:0.7, kitty:0.3, code-oss:0.6
@@ -99,17 +144,13 @@ plugin {
 
 ## Layout Messages
 
-Use `layoutmsg` dispatcher to send commands:
-
-```
-bind = SUPER, key, layoutmsg, <message>
-```
+Send commands with the layout message dispatcher: `hl.dsp.layout("<message>")` in Lua, or `layoutmsg, <message>` in hyprlang.
 
 ### Focus
 
 | Message | Description |
 |---|---|
-| `focus l/r/u/d` | Move focus in direction, wraps instead of jumping to adjacent monitor |
+| `focus l/r/u/d` | Move focus in direction (`t`/`b` are aliases for `u`/`d`). Wraps at the edges when `focus_wrap` is on |
 | `focusback` | Go back in focus history |
 | `focusfwd` | Go forward in focus history |
 
@@ -117,7 +158,7 @@ bind = SUPER, key, layoutmsg, <message>
 
 | Message | Description |
 |---|---|
-| `movewindowto l/r/u/d` | Move window to adjacent column/stack. Moving right at the last column promotes the window to a new column |
+| `movewindowto l/r/u/d` | Move window to adjacent column/stack, keeping its vertical position. Moving past the first/last column gives the window its own column |
 | `promote` | Promote window to its own new column |
 
 ### Column Operations
@@ -125,16 +166,18 @@ bind = SUPER, key, layoutmsg, <message>
 | Message | Params | Description |
 |---|---|---|
 | `swapcol l/r` | `l` or `r` | Swap current column with its left/right neighbor. Wraps around |
-| `colresize` | `0.5`, `+0.2`, `-0.2`, `+conf`, `-conf`, `all 0.5` | Resize current column width (or all columns). `+conf`/`-conf` cycles through `explicit_column_widths` |
+| `colresize` | `0.5`, `+0.2`, `-0.2`, `+conf`, `-conf`, `all 0.5` | Resize current column width (or all columns). `+conf`/`-conf` cycles through `column_widths` |
 | `rowresize` | `0.5`, `+0.1`, `-0.1`, `+conf`, `-conf` | Resize current window height within its column. `+conf`/`-conf` cycles through `window_heights` |
 | `movecoltoworkspace` | `1`, `+1`, `-1`, `special`, etc. | Move entire current column to a workspace |
 | `togglecollapse` | — | Fold / expand the current column |
+| `collapse` | — | Fold the current column |
+| `expand` | — | Expand the current column |
 
 ### Scrolling
 
 | Message | Params | Description |
 |---|---|---|
-| `move` | `+col`, `-col`, `+200`, `-200` | Scroll layout horizontally by columns or pixels |
+| `move` | `+col` (or `col`), `-col`, `+200`, `-200` | Scroll layout horizontally by columns or pixels |
 
 ### Fit Operations
 
@@ -147,7 +190,7 @@ bind = SUPER, key, layoutmsg, <message>
 
 | Message | Description |
 |---|---|
-| `zen` | Show only the focused column (focus mode). Toggle to exit |
+| `zen` | Show only the focused column (focus mode). Follows focus and new windows; toggle to exit |
 | `overview` | Toggle Win+Tab-style flat grid of all windows. Click a window to focus it and restore the layout |
 | `overview_confirm` | Confirm the currently focused window in overview and exit (use with `focus l/r/u/d` for keyboard navigation) |
 | `pin left` | Pin current column to the left screen edge (stays fixed while scrolling) |
@@ -158,74 +201,67 @@ bind = SUPER, key, layoutmsg, <message>
 
 ## Example Keybindings
 
-Copy from [`scrolling.conf`](./scrolling.conf) or use this as a starting point:
+A full hyprlang example is in [`scrolling.conf`](./scrolling.conf). A starting point in Lua:
+
+```lua
+local function lm(msg) return hl.dsp.layout(msg) end
+
+-- Focus movement
+hl.bind("SUPER + H", lm("focus l"))
+hl.bind("SUPER + L", lm("focus r"))
+hl.bind("SUPER + K", lm("focus u"))
+hl.bind("SUPER + J", lm("focus d"))
+
+-- Window movement
+hl.bind("SUPER + SHIFT + H", lm("movewindowto l"))
+hl.bind("SUPER + SHIFT + L", lm("movewindowto r"))
+hl.bind("SUPER + SHIFT + K", lm("movewindowto u"))
+hl.bind("SUPER + SHIFT + J", lm("movewindowto d"))
+hl.bind("SUPER + P", lm("promote"))
+
+-- Column resize
+hl.bind("SUPER + equal", lm("colresize +0.05"))
+hl.bind("SUPER + minus", lm("colresize -0.05"))
+hl.bind("SUPER + bracketright", lm("colresize +conf"))
+hl.bind("SUPER + bracketleft", lm("colresize -conf"))
+
+-- Fit, zen, overview
+hl.bind("SUPER + F", lm("fit active"))
+hl.bind("SUPER + T", lm("togglefit"))
+hl.bind("SUPER + Z", lm("zen"))
+hl.bind("SUPER + Tab", lm("overview"))
+```
+
+The same in hyprlang:
 
 ```
-# Focus movement
 bind = SUPER, H, layoutmsg, focus l
 bind = SUPER, L, layoutmsg, focus r
 bind = SUPER, K, layoutmsg, focus u
 bind = SUPER, J, layoutmsg, focus d
 
-# Window movement
 bind = SUPER SHIFT, H, layoutmsg, movewindowto l
 bind = SUPER SHIFT, L, layoutmsg, movewindowto r
 bind = SUPER SHIFT, K, layoutmsg, movewindowto u
 bind = SUPER SHIFT, J, layoutmsg, movewindowto d
 bind = SUPER, P, layoutmsg, promote
 
-# Column swap
-bind = SUPER ALT, H, layoutmsg, swapcol l
-bind = SUPER ALT, L, layoutmsg, swapcol r
-
-# Column resize
 bind = SUPER, equal, layoutmsg, colresize +0.05
 bind = SUPER, minus, layoutmsg, colresize -0.05
 bind = SUPER, bracketright, layoutmsg, colresize +conf
 bind = SUPER, bracketleft, layoutmsg, colresize -conf
-bind = SUPER SHIFT, equal, layoutmsg, colresize all 0.5
 
-# Scrolling
-bind = SUPER, period, layoutmsg, move +col
-bind = SUPER, comma, layoutmsg, move -col
-bind = SUPER SHIFT, period, layoutmsg, move +200
-bind = SUPER SHIFT, comma, layoutmsg, move -200
-
-# Fit
 bind = SUPER, F, layoutmsg, fit active
-bind = SUPER SHIFT, F, layoutmsg, fit visible
-bind = SUPER CTRL, F, layoutmsg, fit all
 bind = SUPER, T, layoutmsg, togglefit
-
-# Pin
-bind = SUPER CTRL, bracketleft, layoutmsg, pin left
-bind = SUPER CTRL, bracketright, layoutmsg, pin right
-bind = SUPER CTRL, backslash, layoutmsg, unpin
-
-# Collapse
-bind = SUPER, C, layoutmsg, togglecollapse
-
-# Zen mode
 bind = SUPER, Z, layoutmsg, zen
-
-# Focus history
-bind = SUPER ALT, bracketleft, layoutmsg, focusback
-bind = SUPER ALT, bracketright, layoutmsg, focusfwd
-
-# Move column to workspace
-bind = SUPER CTRL SHIFT, 1, layoutmsg, movecoltoworkspace 1
-bind = SUPER CTRL SHIFT, 2, layoutmsg, movecoltoworkspace 2
-bind = SUPER CTRL SHIFT, 3, layoutmsg, movecoltoworkspace 3
-bind = SUPER CTRL SHIFT, right, layoutmsg, movecoltoworkspace +1
-bind = SUPER CTRL SHIFT, left, layoutmsg, movecoltoworkspace -1
-bind = SUPER CTRL SHIFT, S, layoutmsg, movecoltoworkspace special
+bind = SUPER, Tab, layoutmsg, overview
 ```
 
 ---
 
 ## Build Systems
 
-Three build systems are included — pick whichever fits your setup:
+Three build systems are included — pick whichever fits your setup. All produce `hyprscrolling.so`.
 
 | File | Command |
 |---|---|
@@ -237,4 +273,4 @@ Three build systems are included — pick whichever fits your setup:
 
 ## License
 
-MIT
+BSD-3-Clause for code from upstream hyprscrolling, MIT for this fork's changes. See [LICENSE](./LICENSE).
