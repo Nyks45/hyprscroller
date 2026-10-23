@@ -30,6 +30,9 @@
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/managers/fullscreen/handler/FullscreenHandler.hpp>
 #include <hyprland/src/xwayland/XSurface.hpp>
+#include <hyprland/src/desktop/state/ViewState.hpp>
+#include <hyprland/src/desktop/state/ViewHitTester.hpp>
+#include <hyprland/protocols/wlr-layer-shell-unstable-v1.hpp>
 
 #include <hyprutils/string/VarList.hpp>
 #include <hyprutils/string/ConstVarList.hpp>
@@ -101,6 +104,31 @@ static bool opensAtScreenSize(const PHLWINDOW& w) {
         if ((HINTS->flags & (XCB_ICCCM_SIZE_HINT_US_SIZE | XCB_ICCCM_SIZE_HINT_P_SIZE)) && covers(HINTS->width, HINTS->height))
             return true;
         if ((HINTS->flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) && covers(HINTS->min_width, HINTS->min_height))
+            return true;
+    }
+
+    return false;
+}
+
+// Whether a click/hover at `pos` should be ignored for scrolling: the pointer
+// is on the shell, i.e. in the area reserved by bars/panels (exclusive zones),
+// or over a layer-shell surface in the top/overlay layers that takes input
+// there (panels, drawers, notifications), or inside the optional fixed
+// click_edge_left/right margins.
+static bool pointerBlocked(const PHLMONITOR& mon, const Vector2D& pos) {
+    const auto BOX = mon->logicalBox();
+    if (pos.x < BOX.x + (double)g_config.click_edge_left->value() || pos.x > BOX.x + BOX.w - (double)g_config.click_edge_right->value())
+        return true;
+
+    // Windows scrolled off-screen extend under the bar; a click on an empty
+    // part of the bar passes through to them but is still meant for the shell.
+    if (!mon->logicalBoxMinusReserved().containsPoint(pos))
+        return true;
+
+    for (const auto LAYER : {ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, ZWLR_LAYER_SHELL_V1_LAYER_TOP}) {
+        Vector2D surfaceCoords;
+        PHLLS    found;
+        if (Desktop::viewState()->hitTest().layerSurfaceAt(pos, &mon->m_layerSurfaceLayers[LAYER], &surfaceCoords, &found))
             return true;
     }
 
@@ -846,14 +874,9 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
 
                 if (reason == Desktop::FOCUS_REASON_FFM) {
                     // Always check edge exclusion for hover/always-follow
-                    Vector2D cursor = g_pInputManager->getMouseCoordsInternal();
-                    auto PMONITOR = hyprscrolling_compat::monitorFromCursor();
-                    if (PMONITOR) {
-                        const auto MON_BOX = PMONITOR->logicalBox();
-                        if (cursor.x < MON_BOX.x + (double)g_config.click_edge_left->value() ||
-                            cursor.x > MON_BOX.x + MON_BOX.w - (double)g_config.click_edge_right->value())
-                            return;
-                    }
+                    if (const auto PMONITOR = hyprscrolling_compat::monitorFromCursor();
+                        PMONITOR && pointerBlocked(PMONITOR, g_pInputManager->getMouseCoordsInternal()))
+                        return;
 
                     if (g_config.follow_focus->value() == 2) {
                         // follow_focus=2: immediate scroll on hover, fall through to scroll logic
@@ -929,11 +952,9 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
             if (SHOWN_WS != ws)
                 return;
 
-            // Exclude clicks near the left/right screen edges (click_edge_left/right),
-            // e.g. where a shell bar or edge panel sits.
-            const auto MON_BOX = PMONITOR->logicalBox();
-            if (cursor.x < MON_BOX.x + (double)g_config.click_edge_left->value() ||
-                cursor.x > MON_BOX.x + MON_BOX.w - (double)g_config.click_edge_right->value())
+            // Clicks on the shell (bar, panels) or in the edge margins aren't
+            // meant for the window underneath.
+            if (pointerBlocked(PMONITOR, cursor))
                 return;
 
             for (auto& wt : parent->space()->targets()) {
@@ -2390,14 +2411,10 @@ void CScrollingLayout::updateHoverTick() {
         if (!target || m_hoverTimer.getMillis() < (double)g_config.hover_delay_ms->value())
             return;
 
-        // verify cursor is still over this window and not in exclusion zone
+        // verify cursor is still over this window and not over the shell / edge margins
         Vector2D cursor = g_pInputManager->getMouseCoordsInternal();
         auto PMONITOR = hyprscrolling_compat::monitorFromCursor();
-        if (!PMONITOR)
-            return;
-        const auto MON_BOX = PMONITOR->logicalBox();
-        if (cursor.x < MON_BOX.x + (double)g_config.click_edge_left->value() ||
-            cursor.x > MON_BOX.x + MON_BOX.w - (double)g_config.click_edge_right->value())
+        if (!PMONITOR || pointerBlocked(PMONITOR, cursor))
             return;
 
         auto PWIN = target->window();

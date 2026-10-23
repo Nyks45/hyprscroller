@@ -97,7 +97,7 @@ All options live under `plugin:hyprscrolling:`, i.e. `plugin = { hyprscrolling =
 | `collapsed_width` | int (px) | `30` | Width of a collapsed column in pixels |
 | `focus_history` | bool | `true` | Enable focus history for `focusback` / `focusfwd` |
 | `auto_width_rules` | string | *(empty)* | Per-class automatic column width: `firefox:0.7, kitty:0.3` |
-| `click_edge_left` | int (px) | `0` | Clicks/hover within this distance of the left monitor edge don't scroll (e.g. where a side bar sits) |
+| `click_edge_left` | int (px) | `0` | Extra fixed margin at the left monitor edge where clicks/hover don't scroll. Usually not needed: clicks and hover on the shell (reserved bar areas, and panels/drawers/notifications in the top/overlay layers) are detected and ignored automatically |
 | `click_edge_right` | int (px) | `0` | Same for the right monitor edge |
 | `overview_animate` | bool | `false` | Animate overview enter/exit transitions. Leave off on iGPUs for an instant snap |
 | `peek_width` | int (px) | `0` | Keep this much of the neighbouring columns visible at each side, so off-screen windows stay visible and can be hovered/clicked. Column widths are fractions of the usable width minus the two peek strips |
