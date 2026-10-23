@@ -41,31 +41,8 @@
 #include <hyprutils/string/ConstVarList.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
 
-// ---- Hyprland 0.56 compatibility shims ----
-// The 0.56 "view" refactor removed several helpers from CCompositor and moved
-// global state into State:: trackers. These shims restore the old behaviour.
-namespace hyprscrolling_compat {
-    inline PHLMONITOR monitorFromCursor() {
-        const auto COORDS = g_pInputManager->getMouseCoordsInternal();
-        for (auto& m : State::monitorState()->monitors()) {
-            if (!m)
-                continue;
-            // Use logicalBox() for consistency with the rest of the plugin
-            // (accounts for scaling/transforms, not just raw position/size).
-            const auto BOX = m->logicalBox();
-            if (COORDS.x >= BOX.x && COORDS.y >= BOX.y && COORDS.x < BOX.x + BOX.w && COORDS.y < BOX.y + BOX.h)
-                return m;
-        }
-        return nullptr;
-    }
-    inline PHLWORKSPACE workspaceByID(const WORKSPACEID& id) {
-        for (auto& w : State::workspaceState()->workspacesCopy()) {
-            if (w && w->m_id == id)
-                return w;
-        }
-        return nullptr;
-    }
-}
+#include "Compat.hpp"
+
 using namespace Hyprutils::String;
 using namespace Hyprutils::Utils;
 
@@ -77,6 +54,14 @@ constexpr float MAX_ROW_HEIGHT   = 1.F;
 // Coordinate used to park hidden windows (e.g. non-zen columns in zen mode)
 // well outside any realistic multi-monitor logical coordinate space.
 constexpr double OFFSCREEN_COORD = -100000.0;
+
+// Column being moved by movecoltoworkspace: the receiving layout's newTarget()
+// stacks its windows back into one column (see moveColToWorkspace()).
+static struct {
+    std::vector<PHLWINDOWREF> windows;
+    WP<SColumnData>           column;
+    float                     width = 0.5F;
+} g_columnMove;
 
 // Runtime override of new_window_placement set by 'placement' layout messages:
 // -1 = use config, 0 = new column, 1 = stack. Shared by all workspaces.
@@ -208,6 +193,21 @@ void SColumnData::add(SP<SScrollingWindowData> w, int after) {
     windowDatas.insert(windowDatas.begin() + after + 1, w);
     w->column     = self;
     w->windowSize = 1.F / (float)(windowDatas.size());
+}
+
+void SColumnData::setCollapsed(bool collapse) {
+    if (collapse == collapsed)
+        return;
+
+    if (collapse) {
+        savedColumnWidth = columnWidth;
+        collapsed        = true;
+    } else {
+        collapsed = false;
+        if (savedColumnWidth > 0)
+            columnWidth = savedColumnWidth;
+        savedColumnWidth = 0;
+    }
 }
 
 size_t SColumnData::idx(SP<Layout::ITarget> t) {
@@ -790,6 +790,13 @@ CScrollingLayout::~CScrollingLayout() {
         g_pEventLoopManager->removeTimer(m_hoverEventTimer);
 }
 
+void CScrollingLayout::ensureConfig() {
+    if (m_configCallback)
+        return;
+    parseConfig();
+    m_configCallback = Event::bus()->m_events.config.reloaded.listen([this]() { parseConfig(); });
+}
+
 float CScrollingLayout::defaultColumnWidth() {
     return g_config.column_width->value();
 }
@@ -818,10 +825,7 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
     if (!target)
         return;
 
-    if (!m_configCallback) {
-        parseConfig();
-        m_configCallback = Event::bus()->m_events.config.reloaded.listen([this]() { parseConfig(); });
-    }
+    ensureConfig();
 
     if (!m_focusCallback) {
         m_focusCallback = Event::bus()->m_events.window.active.listen([this](PHLWINDOW pWindow, Desktop::eFocusReason reason) {
@@ -996,7 +1000,18 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
     SP<SColumnData>          droppingColumn = droppingData ? droppingData->column.lock() : nullptr;
 
     SP<SColumnData> col;
-    if (droppingColumn && !droppingColumn->collapsed && stackNewWindows()) {
+    const bool      FROM_COLUMN_MOVE = std::ranges::any_of(g_columnMove.windows, [&](const PHLWINDOWREF& w) { return w.lock() == target->window(); });
+    if (FROM_COLUMN_MOVE && g_columnMove.column && g_columnMove.column->layout == this) {
+        // Rest of a column moved here by movecoltoworkspace: stack it back up.
+        col = g_columnMove.column.lock();
+        col->add(target);
+    } else if (FROM_COLUMN_MOVE) {
+        // First window of a moved column: new column at the end, same width.
+        col              = m_scrollingData->add();
+        col->add(target);
+        col->columnWidth = g_columnMove.width;
+        g_columnMove.column = col;
+    } else if (droppingColumn && !droppingColumn->collapsed && stackNewWindows()) {
         // new_window_placement = stack: open below the focused window, in its column.
         col = droppingColumn;
         col->add(target, (int)col->idx(droppingOn));
@@ -1042,10 +1057,7 @@ void CScrollingLayout::movedTarget(SP<Layout::ITarget> target, std::optional<Vec
 
     // Make sure parsed config (column widths etc.) is available even if this
     // is the very first target to enter the layout via a drop.
-    if (!m_configCallback) {
-        parseConfig();
-        m_configCallback = Event::bus()->m_events.config.reloaded.listen([this]() { parseConfig(); });
-    }
+    ensureConfig();
 
     const Vector2D DROP = *focalPoint;
 
@@ -1368,10 +1380,6 @@ SP<SScrollingWindowData> CScrollingLayout::findBestNeighbor(SP<SScrollingWindowD
 Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
     const std::string message{sv};
 
-    auto centerOrFit = [this](const SP<SScrollingLayoutData> WS, const SP<SColumnData> COL) -> void {
-        WS->centerOrFitCol(COL);
-    };
-
     const auto ARGS = CVarList(message, 0, ' ');
     if (ARGS[0] == "move") {
         if (ARGS[1] == "+col" || ARGS[1] == "col") {
@@ -1387,7 +1395,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 return {};
             }
 
-            centerOrFit(m_scrollingData, COL);
+            m_scrollingData->centerOrFitCol(COL);
             m_scrollingData->recalculate();
 
             auto target = COL->windowDatas.front()->target.lock();
@@ -1416,7 +1424,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             if (!COL)
                 return {};
 
-            centerOrFit(m_scrollingData, COL);
+            m_scrollingData->centerOrFitCol(COL);
             m_scrollingData->recalculate();
 
             auto target = COL->windowDatas.back()->target.lock();
@@ -1796,7 +1804,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 auto PREV = m_scrollingData->prev(COL);
                 if (!PREV) {
                     if (!WRAP) {
-                        centerOrFit(m_scrollingData, COL);
+                        m_scrollingData->centerOrFitCol(COL);
                         m_scrollingData->recalculate();
                         auto w = WDATA->target.lock() ? WDATA->target.lock()->window() : nullptr;
                         if (w)
@@ -1809,7 +1817,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 auto pTargetWindowData = findBestNeighbor(WDATA, PREV);
                 if (pTargetWindowData) {
                     focusTargetUpdate(pTargetWindowData->target.lock());
-                    centerOrFit(m_scrollingData, PREV);
+                    m_scrollingData->centerOrFitCol(PREV);
                     m_scrollingData->recalculate();
                     auto w = pTargetWindowData->target.lock() ? pTargetWindowData->target.lock()->window() : nullptr;
                     if (w)
@@ -1823,7 +1831,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 auto NEXT = m_scrollingData->next(COL);
                 if (!NEXT) {
                     if (!WRAP) {
-                        centerOrFit(m_scrollingData, COL);
+                        m_scrollingData->centerOrFitCol(COL);
                         m_scrollingData->recalculate();
                         auto w = WDATA->target.lock() ? WDATA->target.lock()->window() : nullptr;
                         if (w)
@@ -1836,7 +1844,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 auto pTargetWindowData = findBestNeighbor(WDATA, NEXT);
                 if (pTargetWindowData) {
                     focusTargetUpdate(pTargetWindowData->target.lock());
-                    centerOrFit(m_scrollingData, NEXT);
+                    m_scrollingData->centerOrFitCol(NEXT);
                     m_scrollingData->recalculate();
                     auto w = pTargetWindowData->target.lock() ? pTargetWindowData->target.lock()->window() : nullptr;
                     if (w)
@@ -1973,52 +1981,19 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             return {};
 
         moveColToWorkspace(COL, ARGS[1]);
-    } else if (ARGS[0] == "collapse") {
-        auto WDATA = focusedWindowData();
-        if (!WDATA)
-            return {};
-
-        auto COL = WDATA->column.lock();
-        if (!COL || COL->collapsed)
-            return {};
-
-        COL->savedColumnWidth = COL->columnWidth;
-        COL->collapsed = true;
-        m_scrollingData->recalculate();
-    } else if (ARGS[0] == "expand") {
-        auto WDATA = focusedWindowData();
-        if (!WDATA)
-            return {};
-
-        auto COL = WDATA->column.lock();
-        if (!COL || !COL->collapsed)
-            return {};
-
-        COL->collapsed = false;
-        if (COL->savedColumnWidth > 0)
-            COL->columnWidth = COL->savedColumnWidth;
-        COL->savedColumnWidth = 0;
-        m_scrollingData->centerOrFitCol(COL);
-        m_scrollingData->recalculate();
-    } else if (ARGS[0] == "togglecollapse") {
-        auto WDATA = focusedWindowData();
-        if (!WDATA)
-            return {};
-
-        auto COL = WDATA->column.lock();
+    } else if (ARGS[0] == "collapse" || ARGS[0] == "expand" || ARGS[0] == "togglecollapse") {
+        const auto WDATA = focusedWindowData();
+        const auto COL   = WDATA ? WDATA->column.lock() : nullptr;
         if (!COL)
             return {};
 
-        if (COL->collapsed) {
-            COL->collapsed = false;
-            if (COL->savedColumnWidth > 0)
-                COL->columnWidth = COL->savedColumnWidth;
-            COL->savedColumnWidth = 0;
+        const bool COLLAPSE = ARGS[0] == "collapse" || (ARGS[0] == "togglecollapse" && !COL->collapsed);
+        if (COLLAPSE == COL->collapsed)
+            return {};
+
+        COL->setCollapsed(COLLAPSE);
+        if (!COLLAPSE)
             m_scrollingData->centerOrFitCol(COL);
-        } else {
-            COL->savedColumnWidth = COL->columnWidth;
-            COL->collapsed = true;
-        }
         m_scrollingData->recalculate();
     } else if (ARGS[0] == "zen") {
         if (m_zenMode) {
@@ -2040,50 +2015,31 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             m_zenColumn = COL;
             m_scrollingData->recalculate();
         }
-    } else if (ARGS[0] == "focusback") {
+    } else if (ARGS[0] == "focusback" || ARGS[0] == "focusfwd") {
+        const bool BACK = ARGS[0] == "focusback";
         if (!g_config.focus_history->value() || m_focusHistory.empty())
             return {};
-
-        if (m_focusHistoryIdx < 0)
+        if (m_focusHistoryIdx < 0) {
+            if (!BACK)
+                return {};
             m_focusHistoryIdx = (int64_t)m_focusHistory.size() - 1;
-
-        m_focusHistoryNavigating = true;
-        while (m_focusHistoryIdx > 0) {
-            m_focusHistoryIdx--;
-            auto target = m_focusHistory[m_focusHistoryIdx].lock();
-            if (!target)
-                continue;
-            auto WDATA = dataFor(target);
-            if (!WDATA)
-                continue;
-
-            m_scrollingData->centerOrFitCol(WDATA->column.lock());
-            m_scrollingData->recalculate();
-            Desktop::focusState()->fullWindowFocus(target->window(), Desktop::FOCUS_REASON_OTHER);
-            if (target->window())
-                Pointer::mgr()->warpTo(target->window()->middle());
-            break;
         }
-        m_focusHistoryNavigating = false;
-    } else if (ARGS[0] == "focusfwd") {
-        if (!g_config.focus_history->value() || m_focusHistory.empty() || m_focusHistoryIdx < 0)
-            return {};
 
+        // Step through history, skipping windows that are gone or no longer
+        // in this layout.
         m_focusHistoryNavigating = true;
-        while (m_focusHistoryIdx < (int64_t)m_focusHistory.size() - 1) {
-            m_focusHistoryIdx++;
-            auto target = m_focusHistory[m_focusHistoryIdx].lock();
-            if (!target)
-                continue;
-            auto WDATA = dataFor(target);
+        while (BACK ? m_focusHistoryIdx > 0 : m_focusHistoryIdx < (int64_t)m_focusHistory.size() - 1) {
+            m_focusHistoryIdx += BACK ? -1 : 1;
+            const auto TARGET = m_focusHistory[m_focusHistoryIdx].lock();
+            const auto WDATA  = TARGET ? dataFor(TARGET) : nullptr;
             if (!WDATA)
                 continue;
 
             m_scrollingData->centerOrFitCol(WDATA->column.lock());
             m_scrollingData->recalculate();
-            Desktop::focusState()->fullWindowFocus(target->window(), Desktop::FOCUS_REASON_OTHER);
-            if (target->window())
-                Pointer::mgr()->warpTo(target->window()->middle());
+            Desktop::focusState()->fullWindowFocus(TARGET->window(), Desktop::FOCUS_REASON_OTHER);
+            if (TARGET->window())
+                Pointer::mgr()->warpTo(TARGET->window()->middle());
             break;
         }
         m_focusHistoryNavigating = false;
@@ -2176,6 +2132,28 @@ void CScrollingLayout::moveTargetTo(SP<Layout::ITarget> t, Math::eDirection dir,
     auto COL = DATA->column.lock();
     if (!COL)
         return;
+
+    // Nowhere to go in this layout (alone at the strip's end, or at the
+    // top/bottom of its column): like Hyprland's own layouts, move to the
+    // monitor in that direction if binds:window_direction_monitor_fallback.
+    const size_t IDX     = COL->idx(t);
+    const bool   AT_EDGE = (dir == Math::DIRECTION_LEFT && !m_scrollingData->prev(COL) && COL->windowDatas.size() == 1) ||
+        (dir == Math::DIRECTION_RIGHT && !m_scrollingData->next(COL) && COL->windowDatas.size() == 1) || (dir == Math::DIRECTION_UP && IDX == 0) ||
+        (dir == Math::DIRECTION_DOWN && IDX + 1 >= COL->windowDatas.size());
+    if (AT_EDGE) {
+        static auto PMONITORFALLBACK = CConfigValue<Config::INTEGER>("binds:window_direction_monitor_fallback");
+        const auto  PARENT           = m_parent.lock();
+        const auto  WS               = PARENT && PARENT->space() ? PARENT->space()->workspace() : nullptr;
+        const auto  MON              = WS ? WS->m_monitor.lock() : nullptr;
+        if (*PMONITORFALLBACK && MON) {
+            const auto MONINDIR = State::monitorState()->query().relativeTo(MON).inDirection(dir).run();
+            if (MONINDIR && MONINDIR != MON && MONINDIR->m_activeWorkspace) {
+                t->assignToSpace(MONINDIR->m_activeWorkspace->m_space, focalPointForDir(t, dir));
+                return;
+            }
+        }
+        return;
+    }
 
     // Pick the slot in the destination column from the window's own position,
     // not the cursor: this path is keyboard-driven (drags go via movedTarget).
@@ -2302,10 +2280,7 @@ void CScrollingLayout::moveColToWorkspace(SP<SColumnData> col, const std::string
         return;
 
     // Get or create target workspace
-    auto TARGETWS = hyprscrolling_compat::workspaceByID(WSIDNAME.id);
-    if (!TARGETWS) {
-        TARGETWS = State::workspaceState()->create(WSIDNAME.id, CURRENTWS->m_monitor.lock() ? CURRENTWS->m_monitor.lock()->m_id : 0, WSIDNAME.name);
-    }
+    const auto TARGETWS = hyprscrolling_compat::getOrCreateWorkspace(WSIDNAME.id, WSIDNAME.name, CURRENTWS->m_monitor.lock());
 
     if (!TARGETWS || TARGETWS == CURRENTWS)
         return;
@@ -2318,10 +2293,15 @@ void CScrollingLayout::moveColToWorkspace(SP<SColumnData> col, const std::string
             windowsToMove.push_back(target->window());
     }
 
-    // Move each window to the target workspace
-    for (const auto& w : windowsToMove) {
+    // Move each window to the target workspace. Each arrives there as a new
+    // target with nothing focused on that workspace, so without g_columnMove
+    // the target layout would give every window its own column.
+    g_columnMove = {.windows = {}, .column = {}, .width = col->columnWidth};
+    for (const auto& w : windowsToMove)
+        g_columnMove.windows.emplace_back(w);
+    for (const auto& w : windowsToMove)
         Desktop::globalWindowController()->moveWindowToWorkspace(w, TARGETWS);
-    }
+    g_columnMove = {};
 }
 
 void CScrollingLayout::pushFocusHistory(SP<Layout::ITarget> target) {

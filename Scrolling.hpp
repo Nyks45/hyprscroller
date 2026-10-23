@@ -44,6 +44,8 @@ struct SColumnData {
     void                                  add(SP<SScrollingWindowData> w);
     void                                  add(SP<SScrollingWindowData> w, int after);
     void                                  remove(SP<Layout::ITarget> t);
+    // Collapse to collapsed_width, or restore the width it had before.
+    void                                  setCollapsed(bool collapse);
     bool                                  has(SP<Layout::ITarget> t);
     size_t                                idx(SP<Layout::ITarget> t);
 
@@ -195,6 +197,8 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     float                    autoWidthForTarget(SP<Layout::ITarget> target);
 
     float                    defaultColumnWidth();
+    // Parse config and listen for reloads, once.
+    void                     ensureConfig();
     int                      effectiveFitMethod() const;
     // Whether new windows open in the focused column (new_window_placement / placement msg).
     bool                     stackNewWindows() const;

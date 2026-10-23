@@ -1,4 +1,5 @@
 #include "Overview.hpp"
+#include "Compat.hpp"
 #include "globals.hpp"
 
 #include <algorithm>
@@ -105,10 +106,7 @@ COverview::COverview(CScrollingLayout* layout) : m_layout(layout) {
     ;
 }
 
-COverview::~COverview() {
-    stopInput();
-    m_renderListener.reset();
-}
+COverview::~COverview() = default;
 
 PHLMONITOR COverview::monitor() const {
     const auto PARENT = m_layout->m_parent.lock();
@@ -205,15 +203,12 @@ const COverview::SSlot* COverview::slotFor(const SP<SScrollingWindowData>& data)
 void COverview::placeWindow(const PHLWINDOW& window, const CBox& box) {
     // setValueAndWarp, unlike assigning a goal, doesn't fire the size
     // animation's begin callback, which is what sends clients a configure.
-    g_pHyprRenderer->damageWindow(window);
     window->positionAnimation()->setValueAndWarp(box.pos());
     window->sizeAnimation()->setValueAndWarp(box.size());
     // The renderer crops a buffer larger than its window box (to avoid
     // squashing during resizes) unless the window is animating in; set that
-    // so the whole buffer is drawn scaled into the box. The warp's end
-    // callback clears it, so it's set after.
+    // so the whole buffer is drawn scaled into the box.
     window->m_animatingIn = true;
-    g_pHyprRenderer->damageWindow(window);
 }
 
 void COverview::apply(bool instant) {
@@ -233,26 +228,40 @@ void COverview::apply(bool instant) {
     if (m_active)
         g_pHyprRenderer->setCursorFromName(DRAGGED ? "grabbing" : "left_ptr", true);
 
-    m_anims.clear();
+    std::unordered_map<const SScrollingWindowData*, SAnim> anims;
+    bool                                                   changed = false;
     for (const auto& SLOT : m_slots) {
         const auto DATA   = SLOT.data.lock();
         const auto WINDOW = windowOf(DATA);
         if (!WINDOW || DATA == DRAGGED)
             continue;
 
+        const auto PREV = m_anims.find(DATA.get());
+        changed         = changed || PREV == m_anims.end() || PREV->second.to != SLOT.box;
+
         // Start from wherever the window is drawn right now, so retargeting
         // mid-animation (opening/closing windows, drops) is smooth. Windows
-        // parked off-screen by zen mode would fly in from far away; they
-        // appear at their slot instead.
+        // parked off-screen by zen mode, or never laid out yet (opened while
+        // the overview is up), would fly in from far away; they appear at
+        // their slot instead.
         const CBox CURRENT{WINDOW->positionAnimation()->value(), WINDOW->sizeAnimation()->value()};
-        m_anims[DATA.get()] = {.from = DATA->parked ? SLOT.box : CURRENT, .to = SLOT.box};
-        DATA->parked        = false;
+        const bool APPEAR = DATA->parked || DATA->layoutBox.empty();
+        anims[DATA.get()] = {.from = APPEAR ? SLOT.box : CURRENT, .to = SLOT.box};
+        DATA->parked      = false;
     }
+    changed = changed || anims.size() != m_anims.size();
 
     if (!m_progress) {
         Animation::mgr()->createAnimation(0.F, m_progress, Config::animationTree()->getAnimationPropertyConfig("windowsMove"), AVARDAMAGE_NONE);
         m_progress->setUpdateCallback([this](auto) { step(); });
     }
+
+    // Recalculations that don't move anything (a notification mapping,
+    // focus changes...) must not restart the zoom from the beginning.
+    if (!changed && !instant)
+        return;
+
+    m_anims = std::move(anims);
 
     if (instant || !g_config.overview_animate->value()) {
         m_progress->setValueAndWarp(1.F);
@@ -284,6 +293,7 @@ void COverview::step() {
 
         placeWindow(WINDOW, lerpBox(IT->second.from, IT->second.to, P));
     }
+    // One full-monitor damage covers every moved window.
     damage();
 }
 
@@ -327,6 +337,8 @@ void COverview::open() {
     m_ignoreRelease = false;
     m_menuOpen      = false;
     m_active        = true;
+    m_session       = makeShared<bool>(true);
+    m_restoring.clear();
     m_overlay       = true;
     m_fadeStart     = std::chrono::steady_clock::now();
 
@@ -576,6 +588,20 @@ void COverview::open() {
             const auto MON = monitor();
             if (!MON || g_pHyprRenderer->m_renderData.pMonitor.lock() != MON)
                 return;
+
+            // Switched to another workspace meanwhile (gesture, hyprctl...):
+            // close instead of grabbing input for a hidden workspace. Deferred,
+            // since closing re-lays out windows and we're mid-render.
+            const auto PARENT = m_layout->m_parent.lock();
+            const auto WS     = PARENT && PARENT->space() ? PARENT->space()->workspace() : nullptr;
+            if (m_active && WS && MON->m_activeWorkspace != WS && MON->m_activeSpecialWorkspace != WS) {
+                g_pEventLoopManager->doLater([this, SESSION = WP<bool>{m_session}] {
+                    if (const auto S = SESSION.lock(); S && *S)
+                        close(nullptr);
+                });
+                return;
+            }
+
             g_pHyprRenderer->m_renderPass.add(makeUnique<COverviewPassElement>(this, stage));
         });
     }
@@ -600,6 +626,8 @@ void COverview::close(SP<SScrollingWindowData> pick) {
         return;
 
     m_active = false;
+    if (m_session)
+        *m_session = false;
     stopInput();
     if (m_progress)
         m_progress->warp(false);
@@ -610,7 +638,6 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     m_menuOpen = false;
     m_menuItems.clear();
     m_fadeStart = std::chrono::steady_clock::now();
-    m_textCache.clear();
     g_pHyprRenderer->setCursorFromName("left_ptr", true);
 
     // Zoom back in on the picked window; otherwise on the focused one (a window
@@ -626,10 +653,13 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     }
 
     // Keep drawing buffers scaled (not cropped) while windows grow back;
-    // Hyprland clears this when their move/resize animation ends.
+    // draw() clears it once their animation has ended (see m_restoring).
+    m_restoring.clear();
     for (const auto& SLOT : m_slots) {
-        if (const auto WINDOW = windowOf(SLOT.data.lock()))
+        if (const auto WINDOW = windowOf(SLOT.data.lock())) {
             WINDOW->m_animatingIn = true;
+            m_restoring.emplace_back(WINDOW);
+        }
     }
 
     // Leaving overview mode: this applies the real layout boxes again, animated.
@@ -775,7 +805,12 @@ void COverview::onWindowRemoved() {
             windows.emplace_back(WINDOW);
     }
 
-    g_pEventLoopManager->doLater([windows] {
+    g_pEventLoopManager->doLater([windows, SESSION = WP<bool>{m_session}] {
+        // Closed in the meantime: windows are zooming back to their real
+        // boxes; re-placing thumbnails would freeze them.
+        if (const auto S = SESSION.lock(); !S || !*S)
+            return;
+
         for (const auto& REF : windows) {
             const auto WINDOW = REF.lock();
             if (!WINDOW || !WINDOW->m_isMapped)
@@ -789,6 +824,7 @@ void COverview::onWindowRemoved() {
             WINDOW->sizeAnimation()->setValueAndWarp(REAL);
             WINDOW->sendWindowSize(true);
             placeWindow(WINDOW, THUMB);
+            g_pHyprRenderer->damageWindow(WINDOW);
         }
     });
 }
@@ -924,13 +960,7 @@ std::vector<COverview::SMenuItem> COverview::rootMenu(const SP<SScrollingWindowD
                                                 const auto M = monitor();
                                                 if (!W || !M)
                                                     return;
-                                                PHLWORKSPACE ws;
-                                                for (const auto& w : State::workspaceState()->workspacesCopy()) {
-                                                    if (w && w->m_id == id)
-                                                        ws = w;
-                                                }
-                                                if (!ws)
-                                                    ws = State::workspaceState()->create(id, M->m_id, std::to_string(id));
+                                                const auto ws = hyprscrolling_compat::getOrCreateWorkspace(id, std::to_string(id), M);
                                                 if (ws)
                                                     (void)Config::Actions::moveToWorkspace(ws, true, W);
                                             }});
@@ -1047,19 +1077,10 @@ std::vector<COverview::SMenuItem> COverview::rootMenu(const SP<SScrollingWindowD
         items.push_back({.label = "Unpin column", .action = setPin(PIN_NONE)});
 
     items.push_back({.label = COL->collapsed ? "Expand column" : "Collapse column", .action = [this, WCOL] {
-                         const auto C = WCOL.lock();
-                         if (!C)
-                             return;
-                         if (C->collapsed) {
-                             C->collapsed = false;
-                             if (C->savedColumnWidth > 0)
-                                 C->columnWidth = C->savedColumnWidth;
-                             C->savedColumnWidth = 0;
-                         } else {
-                             C->savedColumnWidth = C->columnWidth;
-                             C->collapsed        = true;
+                         if (const auto C = WCOL.lock()) {
+                             C->setCollapsed(!C->collapsed);
+                             apply();
                          }
-                         apply();
                      }});
 
     return items;
@@ -1140,7 +1161,8 @@ void COverview::draw(eRenderStage stage) {
         }
 
         // Dim the wallpaper behind the zoomed-out windows.
-        g_pHyprOpenGL->renderRect(CBox{{}, MON->m_pixelSize}, CHyprColor{0, 0, 0, OV_DIM * ALPHA}, {});
+        if (ALPHA > 0.F)
+            g_pHyprOpenGL->renderRect(CBox{{}, MON->m_pixelSize}, CHyprColor{0, 0, 0, OV_DIM * ALPHA}, {});
         if (animate)
             damage();
         return;
@@ -1148,6 +1170,28 @@ void COverview::draw(eRenderStage stage) {
 
     if (stage != RENDER_POST_WINDOWS)
         return;
+
+    // Windows that finished zooming back after close: stop drawing them
+    // scaled, so later shrink animations crop cleanly again.
+    std::erase_if(m_restoring, [](const PHLWINDOWREF& ref) {
+        const auto WINDOW = ref.lock();
+        if (!WINDOW)
+            return true;
+        if (WINDOW->positionAnimation()->isBeingAnimated() || WINDOW->sizeAnimation()->isBeingAnimated())
+            return false;
+        WINDOW->m_animatingIn = false;
+        return true;
+    });
+
+    if (ALPHA <= 0.F) {
+        // Fully faded out: keep the hook only until the restore above is done.
+        if (!m_active && m_restoring.empty()) {
+            m_overlay = false;
+            m_textCache.clear();
+            m_renderListener.reset();
+        }
+        return;
+    }
 
     const float SCALE    = MON->m_scale;
     const auto  SELECTED = m_selected.lock();
@@ -1187,8 +1231,10 @@ void COverview::draw(eRenderStage stage) {
         if (DRAG_WIN && DATA != DRAGGED && !global.intersection(DRAG_BOX).empty())
             continue;
 
+        // Size the label for the window's slot, not its animated box: the box
+        // changes every frame of the zoom and would re-render the text each time.
         const CBox BOX = global.copy().translate(-MON->m_position).scale(SCALE).round();
-        const auto TEX = BOX.w > 1 ? text(WINDOW->m_title, (int)(BOX.w - 32 * SCALE)) : nullptr;
+        const auto TEX = BOX.w > 1 ? text(WINDOW->m_title, (int)std::round((SLOT.box.w - 32) * SCALE)) : nullptr;
         if (!TEX)
             continue;
 
@@ -1206,12 +1252,8 @@ void COverview::draw(eRenderStage stage) {
     if (m_menuOpen && m_active)
         drawMenu(MON, ALPHA);
 
-    // Keep repainting while something animates; drop the overlay once it has
-    // fully faded out.
+    // Keep repainting while something animates (the fade-out ends with a frame
+    // at alpha 0, which drops the overlay above).
     if (animate)
         damage();
-    else if (!m_active) {
-        m_overlay = false;
-        m_renderListener.reset();
-    }
 }

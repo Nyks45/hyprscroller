@@ -105,6 +105,14 @@ class COverview {
 
     std::unordered_map<std::string, SP<Render::ITexture>>  m_textCache;
 
+    // True while this open/close cycle is open; deferred callbacks hold a weak
+    // ref so they never act on a closed overview or a destroyed layout.
+    SP<bool>                                               m_session;
+    // Windows zooming back after close. They keep m_animatingIn (drawn scaled)
+    // until their move/resize animation ends, then it's cleared: Hyprland
+    // won't, and leaving it set would squash every later shrink animation.
+    std::vector<PHLWINDOWREF>                              m_restoring;
+
     // One progress value (0 -> 1, windowsMove curve) drives every window from
     // its box when the animation (re)started to its slot.
     struct SAnim {
