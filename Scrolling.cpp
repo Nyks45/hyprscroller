@@ -68,6 +68,23 @@ constexpr float MAX_ROW_HEIGHT   = 1.F;
 // well outside any realistic multi-monitor logical coordinate space.
 constexpr double OFFSCREEN_COORD = -100000.0;
 
+// Push a window's layoutBox to its target. Windows coming back from being
+// parked off-screen are warped, so they don't fly in from OFFSCREEN_COORD.
+static void applyLayoutBox(const SP<SScrollingWindowData>& WDATA, bool forceInstant) {
+    auto target = WDATA->target.lock();
+    if (!target)
+        return;
+
+    CBox box = WDATA->layoutBox;
+    box.round();
+    target->setPositionGlobal(box);
+    if (forceInstant || WDATA->parked) {
+        target->warpPositionSize();
+        target->damageEntire();
+    }
+    WDATA->parked = false;
+}
+
 
 //
 void SColumnData::add(SP<Layout::ITarget> t) {
@@ -391,27 +408,26 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
                 WDATA->layoutBox = CBox{0, currentTop, USABLE.w, WDATA->windowSize * USABLE.h}
                                        .translate(WORKAREA.pos());
                 currentTop += WDATA->windowSize * USABLE.h;
-
-                auto target = WDATA->target.lock();
-                if (target) {
-                    CBox box = WDATA->layoutBox;
-                    box.round();
-                    target->setPositionGlobal(box);
-                    if (forceInstant) { target->warpPositionSize(); target->damageEntire(); }
-                }
+                applyLayoutBox(WDATA, forceInstant);
             }
 
-            // Move all other columns off-screen
+            // Park all other columns off-screen at their normal size, so
+            // clients don't reflow to 1x1 while hidden. Warp them there
+            // rather than animating them across the screen.
             for (const auto& COL : columns) {
                 if (COL == zenCol)
                     continue;
+                const double ITEM_WIDTH = colWidth(COL, USABLE.w);
                 for (const auto& WDATA : COL->windowDatas) {
-                    WDATA->layoutBox = CBox{OFFSCREEN_COORD, OFFSCREEN_COORD, 1, 1};
+                    WDATA->layoutBox = CBox{OFFSCREEN_COORD, OFFSCREEN_COORD, ITEM_WIDTH, WDATA->windowSize * USABLE.h};
                     auto target = WDATA->target.lock();
                     if (target) {
-                        target->setPositionGlobal(WDATA->layoutBox);
-                        if (forceInstant) { target->warpPositionSize(); target->damageEntire(); }
+                        CBox box = WDATA->layoutBox;
+                        box.round();
+                        target->setPositionGlobal(box);
+                        target->warpPositionSize();
                     }
+                    WDATA->parked = true;
                 }
             }
             return;
@@ -447,13 +463,7 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
 
             WDATA->layoutBox = CBox{x, y, cellW, cellH}.translate(WORKAREA.pos());
 
-            auto target = WDATA->target.lock();
-            if (target) {
-                CBox box = WDATA->layoutBox;
-                box.round();
-                target->setPositionGlobal(box);
-                if (forceInstant) { target->warpPositionSize(); target->damageEntire(); }
-            }
+            applyLayoutBox(WDATA, forceInstant);
         }
         return;
     }
@@ -488,13 +498,7 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
                                    .translate(WORKAREA.pos());
             currentTop += WDATA->windowSize * USABLE.h;
 
-            auto target = WDATA->target.lock();
-            if (target) {
-                CBox box = WDATA->layoutBox;
-                box.round();
-                target->setPositionGlobal(box);
-                if (forceInstant) { target->warpPositionSize(); target->damageEntire(); }
-            }
+            applyLayoutBox(WDATA, forceInstant);
         }
         pinnedLeftX += ITEM_WIDTH;
     }
@@ -515,13 +519,7 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
                                    .translate(WORKAREA.pos());
             currentTop += WDATA->windowSize * USABLE.h;
 
-            auto target = WDATA->target.lock();
-            if (target) {
-                CBox box = WDATA->layoutBox;
-                box.round();
-                target->setPositionGlobal(box);
-                if (forceInstant) { target->warpPositionSize(); target->damageEntire(); }
-            }
+            applyLayoutBox(WDATA, forceInstant);
         }
     }
 
@@ -540,18 +538,7 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
                                    .translate(WORKAREA.pos() + Vector2D{PINNED_L - cameraLeft, 0.0});
 
             currentTop += WDATA->windowSize * USABLE.h;
-
-            auto target = WDATA->target.lock();
-            if (target) {
-                CBox box = WDATA->layoutBox;
-                box.round();
-                target->setPositionGlobal(box);
-
-                if (forceInstant) {
-                    target->warpPositionSize();
-                    target->damageEntire();
-                }
-            }
+            applyLayoutBox(WDATA, forceInstant);
         }
 
         currentLeft += ITEM_WIDTH;
@@ -677,6 +664,10 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                 auto WDATA = dataFor(t);
                 if (!WDATA)
                     break;
+
+                // Applies to every focus reason, including clicks and
+                // external dispatchers, and regardless of follow_focus.
+                syncZenColumn(WDATA->column.lock());
 
                 if (!g_config.follow_focus->value())
                     return;
@@ -820,18 +811,15 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
     SP<SScrollingWindowData> droppingData   = droppingOn ? dataFor(droppingOn) : nullptr;
     SP<SColumnData>          droppingColumn = droppingData ? droppingData->column.lock() : nullptr;
 
-    if (!droppingColumn) {
-        auto col = m_scrollingData->add();
-        col->add(target);
-        col->columnWidth = autoWidthForTarget(target);
-        m_scrollingData->centerOrFitCol(col);
-    } else {
-        auto idx = m_scrollingData->idx(droppingColumn);
-        auto col = idx == -1 ? m_scrollingData->add() : m_scrollingData->add(idx);
-        col->add(target);
-        col->columnWidth = autoWidthForTarget(target);
-        m_scrollingData->centerOrFitCol(col);
-    }
+    const auto idx = droppingColumn ? m_scrollingData->idx(droppingColumn) : -1;
+    auto       col = idx == -1 ? m_scrollingData->add() : m_scrollingData->add(idx);
+    col->add(target);
+    col->columnWidth = autoWidthForTarget(target);
+    m_scrollingData->centerOrFitCol(col);
+
+    // A new window in zen mode would otherwise be parked off-screen.
+    if (m_zenMode)
+        m_zenColumn = col;
 
     m_scrollingData->recalculate();
 }
@@ -891,6 +879,9 @@ void CScrollingLayout::movedTarget(SP<Layout::ITarget> target, std::optional<Vec
     dropCol->add(target, (int)afterIdx);
     if (afterIdx + 1 < dropCol->windowDatas.size())
         dropCol->lastFocusedWindow = dropCol->windowDatas[afterIdx + 1];
+
+    if (m_zenMode)
+        m_zenColumn = dropCol;
 
     m_scrollingData->centerOrFitCol(dropCol);
     m_scrollingData->recalculate();
@@ -1071,6 +1062,14 @@ SP<Layout::ITarget> CScrollingLayout::getNextCandidate(SP<Layout::ITarget> old) 
     return nullptr;
 }
 
+void CScrollingLayout::syncZenColumn(SP<SColumnData> col) {
+    if (!m_zenMode || !col || col == m_zenColumn)
+        return;
+
+    m_zenColumn = col;
+    m_scrollingData->recalculate();
+}
+
 void CScrollingLayout::focusTargetUpdate(SP<Layout::ITarget> target) {
     if (!target) {
         Desktop::focusState()->fullWindowFocus(PHLWINDOW{nullptr}, Desktop::FOCUS_REASON_OTHER);
@@ -1089,6 +1088,7 @@ void CScrollingLayout::focusTargetUpdate(SP<Layout::ITarget> target) {
     if (WDATA) {
         if (auto col = WDATA->column.lock()) {
             col->lastFocusedWindow = WDATA;
+            syncZenColumn(col);
             if (g_config.center_active_column->value()) {
                 m_scrollingData->centerOrFitCol(col);
                 m_scrollingData->recalculate();

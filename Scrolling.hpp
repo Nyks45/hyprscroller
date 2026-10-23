@@ -28,6 +28,8 @@ struct SScrollingWindowData {
     float               windowSize = 1.F;
 
     CBox                layoutBox;
+    // Moved off-screen (zen mode); warped back instead of animated.
+    bool                parked = false;
 };
 
 struct SColumnData {
@@ -164,6 +166,9 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     SP<SScrollingWindowData> focusedWindowData();
 
     void                     focusTargetUpdate(SP<Layout::ITarget> target);
+    // In zen mode, switch the shown column to `col` (e.g. on focus change or
+    // a new window) so focused windows are never left parked off-screen.
+    void                     syncZenColumn(SP<SColumnData> col);
     void                     pushFocusHistory(SP<Layout::ITarget> target);
     void                     moveTargetTo(SP<Layout::ITarget> t, Math::eDirection dir, bool silent);
     void                     moveColToWorkspace(SP<SColumnData> col, const std::string& wsStr);
