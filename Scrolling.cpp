@@ -1217,21 +1217,19 @@ void CScrollingLayout::resizeTarget(const Vector2D& delta, SP<Layout::ITarget> t
     const auto PREV_COLUMN = m_scrollingData->prev(CURR_COLUMN);
 
     switch (corner) {
+        // An edge shared with a neighbouring column moves the divider between
+        // them; an outer edge (first/last column) resizes the column alone.
         case Layout::CORNER_BOTTOMLEFT:
         case Layout::CORNER_TOPLEFT: {
-            if (!PREV_COLUMN)
-                break;
-
-            PREV_COLUMN->columnWidth = std::clamp(PREV_COLUMN->columnWidth + (float)DELTA_AS_PERC.x, MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
+            if (PREV_COLUMN)
+                PREV_COLUMN->columnWidth = std::clamp(PREV_COLUMN->columnWidth + (float)DELTA_AS_PERC.x, MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
             CURR_COLUMN->columnWidth = std::clamp(CURR_COLUMN->columnWidth - (float)DELTA_AS_PERC.x, MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
             break;
         }
         case Layout::CORNER_BOTTOMRIGHT:
         case Layout::CORNER_TOPRIGHT: {
-            if (!NEXT_COLUMN)
-                break;
-
-            NEXT_COLUMN->columnWidth = std::clamp(NEXT_COLUMN->columnWidth - (float)DELTA_AS_PERC.x, MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
+            if (NEXT_COLUMN)
+                NEXT_COLUMN->columnWidth = std::clamp(NEXT_COLUMN->columnWidth - (float)DELTA_AS_PERC.x, MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
             CURR_COLUMN->columnWidth = std::clamp(CURR_COLUMN->columnWidth + (float)DELTA_AS_PERC.x, MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
             break;
         }
