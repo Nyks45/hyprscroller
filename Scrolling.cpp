@@ -412,13 +412,16 @@ double SScrollingLayoutData::rowHeights(const SP<SColumnData>& c, double usableH
         return usableH;
     }
 
-    // column_scroll: each window is a fraction of the screen height (minus a
-    // peek strip above and below once there is more than one window), so the
-    // column can be taller than the screen and scrolls vertically.
-    const double PEEK  = c->windowDatas.size() > 1 ? std::clamp((double)g_config.peek_width->value(), 0.0, usableH / 4.0) : 0.0;
+    // column_scroll: each window is a fraction of the screen height minus a
+    // peek strip for each neighbour it has (above and/or below), so a focused
+    // window leaves exactly one peek of every neighbour in view. The column
+    // can be taller than the screen and scrolls vertically.
+    const size_t N     = c->windowDatas.size();
+    const double PEEK  = N > 1 ? std::clamp((double)g_config.peek_width->value(), 0.0, usableH / 4.0) : 0.0;
     double       total = 0;
-    for (const auto& WD : c->windowDatas) {
-        out.push_back(WD->windowSize * (usableH - 2.0 * PEEK));
+    for (size_t i = 0; i < N; ++i) {
+        const double PEEKS = (i > 0 ? PEEK : 0.0) + (i + 1 < N ? PEEK : 0.0);
+        out.push_back(c->windowDatas[i]->windowSize * (usableH - PEEKS));
         total += out.back();
     }
 
@@ -2100,8 +2103,12 @@ std::optional<Vector2D> CScrollingLayout::predictSizeForNewTarget() {
         const size_t N = COL->windowDatas.size() + 1;
         width          = DATA->colWidth(COL, USABLE.w);
         if (g_config.column_scroll->value()) {
+            // Opens below the focused window: a peek for the window above, and
+            // one for a window below unless the focused one is the last.
             const double PEEK_V = std::clamp((double)g_config.peek_width->value(), 0.0, USABLE.h / 4.0);
-            height              = std::min(USABLE.h, std::clamp((double)g_config.window_default_height->value(), (double)MIN_ROW_HEIGHT, 1.0) * (USABLE.h - 2 * PEEK_V));
+            const bool   BELOW  = FOCUSED && COL->idx(FOCUSED->target.lock()) + 1 < COL->windowDatas.size();
+            height              = std::min(USABLE.h, std::clamp((double)g_config.window_default_height->value(), (double)MIN_ROW_HEIGHT, 1.0) *
+                                                         (USABLE.h - PEEK_V * (BELOW ? 2.0 : 1.0)));
         } else
             height = USABLE.h / (double)N;
     } else if (DATA->columns.empty() && g_config.fullscreen_on_one_column->value())
