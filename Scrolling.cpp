@@ -2383,7 +2383,11 @@ float CScrollingLayout::autoWidthForTarget(SP<Layout::ITarget> target) {
 bool CScrollingLayout::stackNewWindows() const {
     if (g_placementOverride >= 0)
         return g_placementOverride == 1;
-    return g_config.new_window_placement->value() == "stack";
+    if (g_config.new_window_placement->value() == "stack")
+        return true;
+    // Own columns until the workspace is this wide, then below the focused window.
+    const auto LIMIT = g_config.stack_after_columns->value();
+    return LIMIT > 0 && (int64_t)m_scrollingData->columns.size() >= LIMIT;
 }
 
 int CScrollingLayout::effectiveFitMethod() const {

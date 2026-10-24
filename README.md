@@ -106,6 +106,7 @@ All options live under `plugin:hyprscrolling:`, i.e. `plugin = { hyprscrolling =
 | `peek_width` | int (px) | `0` | Keep this much of the neighbouring columns visible at each side, so off-screen windows stay visible and can be hovered/clicked. Column widths are fractions of the usable width minus the two peek strips |
 | `stretch_to_fill` | bool | `false` | When the columns together are narrower than the screen, stretch them to fill it instead of centring them |
 | `new_window_placement` | string | `column` | Where new windows open: `column` = in their own new column next to the focused one, `stack` = in the focused column, below the focused window |
+| `stack_after_columns` | int | `0` | With `column` placement: once the workspace has this many columns, new windows stack below the focused window instead (`0` = never) |
 | `column_scroll` | bool | `false` | Columns scroll vertically: windows in a column keep their own height instead of sharing the screen, a new stacked window opens below and the column scrolls to it, and focusing a window scrolls its column. `peek_width` also applies vertically. Resizing changes only that window's height |
 | `fullscreen_screen_sized` | bool | `false` | Make X11 windows that open asking for the full screen size (borderless games and the like) fullscreen instead of squeezing them into a column. Windows that request fullscreen are always honoured |
 

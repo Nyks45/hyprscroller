@@ -200,7 +200,8 @@ class CScrollingLayout : public Layout::ITiledAlgorithm {
     // Parse config and listen for reloads, once.
     void                     ensureConfig();
     int                      effectiveFitMethod() const;
-    // Whether new windows open in the focused column (new_window_placement / placement msg).
+    // Whether new windows open in the focused column (new_window_placement,
+    // stack_after_columns, or the placement msg).
     bool                     stackNewWindows() const;
     void                     parseConfig();
     // Creates the follow_hover timer while follow_hover is on and removes it

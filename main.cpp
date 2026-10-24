@@ -48,6 +48,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_config.stretch_to_fill          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:stretch_to_fill", "stretch columns to fill the screen when they are narrower than it", 0);
     g_config.fullscreen_screen_sized  = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:fullscreen_screen_sized", "fullscreen X11 windows that open at screen size (games) instead of tiling them", 0);
     g_config.new_window_placement     = makeShared<Config::Values::CStringValue>("plugin:hyprscrolling:new_window_placement", "where new windows open: column (own column) or stack (focused column)", "column");
+    g_config.stack_after_columns      = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:stack_after_columns", "with column placement: once a workspace has this many columns, new windows stack below the focused one (0 = never)", 0);
     g_config.column_scroll            = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:column_scroll", "columns scroll vertically; window heights are independent fractions of the screen", 0);
     g_config.overview_zoom            = makeShared<Config::Values::CFloatValue>("plugin:hyprscrolling:overview_zoom", "maximum overview zoom (it zooms out further if needed to fit everything)", 0.5);
     g_config.overview_titles          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:overview_titles", "show window titles in the overview", 1);
@@ -77,6 +78,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.stretch_to_fill);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.fullscreen_screen_sized);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.new_window_placement);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_config.stack_after_columns);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.column_scroll);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.overview_zoom);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.overview_titles);
