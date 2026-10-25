@@ -44,6 +44,8 @@ constexpr double OV_NEW_COLUMN_EDGE = 0.2;  // drop in the outer 20% of a column
 constexpr int    OV_FADE_MS         = 220;  // backdrop/label fade
 constexpr int    OV_HIGHLIGHT_MS    = 110;  // highlight slide between windows
 constexpr float  OV_DIM             = 0.45F;
+constexpr int    OV_SWITCH_DELAY_MS = 150;  // Alt+Tab held this long shows the switcher
+constexpr double OV_CLOSE_SIZE      = 26.0; // close button on the selected thumbnail
 
 // Right-click menu, logical px.
 constexpr double MENU_WIDTH    = 250.0;
@@ -134,6 +136,36 @@ PHLMONITOR COverview::monitor() const {
     return WS ? WS->m_monitor.lock() : nullptr;
 }
 
+// Show a minimized window again: drop the "minimized" tag, the state hyprflow
+// keeps windows in line with (it shows the window with its animation and
+// focuses it, deferred). Without hyprflow, unhide and focus it here.
+static void restoreMinimized(const PHLWINDOW& w) {
+    if (w->m_ruleApplicator->m_tagKeeper.applyTag("-minimized")) {
+        w->m_ruleApplicator->propertiesChanged(Desktop::Rule::RULE_PROP_TAG);
+        w->updateDecorationValues();
+    }
+    g_pEventLoopManager->doLater([WREF = PHLWINDOWREF{w}] {
+        const auto W = WREF.lock();
+        if (!W || !W->m_isMapped || !W->isHidden() || W->m_ruleApplicator->m_tagKeeper.isTagged("minimized", true))
+            return;
+        W->setHidden(false);
+        Desktop::focusState()->fullWindowFocus(W, Desktop::FOCUS_REASON_OTHER);
+    });
+}
+
+// Fade `w`'s shadow out (Hyprland fades shadow colour changes). Its shadow
+// also covers the room the title bar keeps, which the bar normally hides: on
+// a thumbnail, without the bar, it would show as a dark band above it.
+static void fadeShadowOut(const PHLWINDOW& w) {
+    const Config::CGradientValueData CLEAR{CHyprColor(0, 0, 0, 0)};
+    if (w->m_realShadowColor == CLEAR)
+        return;
+    w->m_realShadowColorPrevious = w->m_realShadowColor;
+    w->m_realShadowColor         = CLEAR;
+    w->m_shadowFadeAnimationProgress->setValueAndWarp(0.F);
+    *w->m_shadowFadeAnimationProgress = 1.F;
+}
+
 // While in the overview a window's own border would outline the room its
 // title bar keeps (the bar isn't drawn on thumbnails): fade the border out,
 // and tag the window "hyprscroller-overview" so decorations (hyprflow's
@@ -150,7 +182,10 @@ static void markInOverview(const PHLWINDOW& w, bool on) {
         R->activeBorderColor().unset(Desktop::Types::PRIORITY_SET_PROP);
         R->inactiveBorderColor().unset(Desktop::Types::PRIORITY_SET_PROP);
     }
+    // Back on: the shadow fades from clear to its colour again.
     w->updateDecorationValues();
+    if (on)
+        fadeShadowOut(w);
 }
 
 void COverview::damage() const {
@@ -431,6 +466,10 @@ std::vector<SP<SScrollingWindowData>> COverview::mruOrder() const {
                 break;
             }
         }
+        // Minimized windows go last, like Windows: Alt+Tab shouldn't bring
+        // back the window you just minimized.
+        if (W->isHidden())
+            rank = rank == SIZE_MAX ? SIZE_MAX : rank + (SIZE_MAX / 2);
         ranked.emplace_back(rank, DATA);
     }
     std::ranges::stable_sort(ranked, {}, &std::pair<size_t, SP<SScrollingWindowData>>::first);
@@ -442,21 +481,35 @@ std::vector<SP<SScrollingWindowData>> COverview::mruOrder() const {
 
 void COverview::switchWindows(bool reverse) {
     if (!m_active) {
-        open();
-        if (!m_active)
+        // Like Windows: nothing shows yet. Let go of Alt quickly and it just
+        // flips to the window (quickSwitch); keep holding and the switcher
+        // opens (showSwitcher). Further Tabs meanwhile count.
+        if (m_switchPending) {
+            m_pendingSteps += reverse ? -1 : 1;
             return;
-        m_switchMode     = true;
+        }
+        m_switchPending = true;
+        m_pendingSteps  = reverse ? -1 : 1;
 
-        // Hyprland has no modifier-change event: poll while open, and switch
-        // to the selection as soon as no keyboard holds Alt any more.
+        // Hyprland has no modifier-change event: poll, and switch as soon as
+        // no keyboard holds Alt any more.
         if (!m_altTimer) {
             m_altTimer = makeShared<CEventLoopTimer>(
                 std::nullopt,
                 [this, ALIVE = WP<bool>{m_alive}](SP<CEventLoopTimer> self, void*) {
-                    if (!ALIVE.lock() || !m_active || !m_switchMode)
+                    if (!ALIVE.lock())
                         return;
                     const bool ALT = std::ranges::any_of(g_pInputManager->m_keyboards, [](const auto& kb) { return kb && (kb->getModifiers() & HL_MODIFIER_ALT); });
-                    if (!ALT) {
+                    if (m_switchPending) {
+                        if (!ALT) {
+                            m_switchPending = false;
+                            m_showTimer->updateTimeout(std::nullopt);
+                            quickSwitch(m_pendingSteps);
+                            return;
+                        }
+                    } else if (!m_active || !m_switchMode)
+                        return;
+                    else if (!ALT) {
                         confirm();
                         return;
                     }
@@ -465,11 +518,20 @@ void COverview::switchWindows(bool reverse) {
                 nullptr);
             g_pEventLoopManager->addTimer(m_altTimer);
         }
+        if (!m_showTimer) {
+            m_showTimer = makeShared<CEventLoopTimer>(
+                std::nullopt,
+                [this, ALIVE = WP<bool>{m_alive}](SP<CEventLoopTimer>, void*) {
+                    if (!ALIVE.lock() || !m_switchPending)
+                        return;
+                    m_switchPending = false;
+                    showSwitcher(m_pendingSteps);
+                },
+                nullptr);
+            g_pEventLoopManager->addTimer(m_showTimer);
+        }
         m_altTimer->updateTimeout(std::chrono::milliseconds(25));
-        const auto ORDER = mruOrder();
-        // Starts on the window used before this one, like Alt+Tab.
-        if (!ORDER.empty())
-            select(ORDER.size() > 1 ? ORDER[reverse ? ORDER.size() - 1 : 1] : ORDER.front());
+        m_showTimer->updateTimeout(std::chrono::milliseconds(OV_SWITCH_DELAY_MS));
         return;
     }
     m_switchMode     = true;
@@ -479,6 +541,55 @@ void COverview::switchWindows(bool reverse) {
     const auto   IT  = std::ranges::find(ORDER, m_selected.lock());
     const size_t IDX = IT == ORDER.end() ? 0 : IT - ORDER.begin();
     select(ORDER[(IDX + (reverse ? ORDER.size() - 1 : 1)) % ORDER.size()]);
+}
+
+void COverview::showSwitcher(int steps) {
+    open();
+    if (!m_active)
+        return;
+    m_switchMode = true;
+    m_altTimer->updateTimeout(std::chrono::milliseconds(25));
+    // Starts on the window used before this one (or further back after more
+    // Tabs), like Alt+Tab.
+    const auto ORDER = mruOrder();
+    if (ORDER.empty())
+        return;
+    const int N = (int)ORDER.size();
+    select(ORDER[((steps % N) + N) % N]);
+}
+
+void COverview::quickSwitch(int steps) {
+    const auto PARENT = m_layout->m_parent.lock();
+    const auto WS     = PARENT && PARENT->space() ? PARENT->space()->workspace() : nullptr;
+    if (!WS)
+        return;
+
+    // This workspace's windows (minimized ones too, as in the switcher), most
+    // recently used first.
+    std::vector<PHLWINDOW> order;
+    const auto             add = [&](const PHLWINDOW& w) {
+        if (w && w->m_isMapped && w->m_workspace == WS && std::ranges::find(order, w) == order.end())
+            order.push_back(w);
+    };
+    const auto& HISTORY = Desktop::History::windowTracker()->fullHistory(); // oldest first
+    for (size_t i = HISTORY.size(); i-- > 0;)
+        add(HISTORY[i].lock());
+    for (const auto& w : Desktop::windowState()->windows())
+        add(w);
+    // Minimized ones last (see mruOrder()).
+    std::ranges::stable_partition(order, [](const PHLWINDOW& w) { return !w->isHidden(); });
+    if (order.size() < 2)
+        return;
+
+    const int  N = (int)order.size();
+    const auto W = order[((steps % N) + N) % N];
+    if (W->isHidden())
+        restoreMinimized(W);
+    else if (W->m_isFloating) {
+        Desktop::focusState()->fullWindowFocus(W, Desktop::FOCUS_REASON_OTHER);
+        Desktop::windowState()->raise(W);
+    } else if (const auto T = W->layoutTarget())
+        m_layout->focusTargetUpdate(T);
 }
 
 void COverview::toggle() {
@@ -664,6 +775,8 @@ void COverview::open() {
             case XKB_KEY_Return:
             case XKB_KEY_KP_Enter:
             case XKB_KEY_space: confirm(); break;
+            case XKB_KEY_q:
+            case XKB_KEY_Delete: closeSelected(); break;
             case XKB_KEY_Menu: {
                 const auto SEL  = m_selected.lock();
                 const auto SLOT = SEL ? slotFor(SEL) : nullptr;
@@ -729,6 +842,13 @@ void COverview::open() {
 
         if (const auto SLOT = slotAt(pos))
             select(SLOT->data.lock());
+
+        const auto SEL_WIN = windowOf(m_selected.lock());
+        const bool HOVER   = SEL_WIN && closeButtonBox(CBox{SEL_WIN->positionAnimation()->value(), SEL_WIN->sizeAnimation()->value()}).containsPoint(pos);
+        if (HOVER != m_closeHover) {
+            m_closeHover = HOVER;
+            damage();
+        }
     });
 
     m_buttonListener = Event::bus()->m_events.input.mouse.button.listen([this](IPointer::SButtonEvent ev, Event::SCallbackInfo& info) {
@@ -769,6 +889,12 @@ void COverview::open() {
             return;
 
         if (PRESSED) {
+            if (const auto SEL_WIN = windowOf(m_selected.lock());
+                SEL_WIN && closeButtonBox(CBox{SEL_WIN->positionAnimation()->value(), SEL_WIN->sizeAnimation()->value()}).containsPoint(POS)) {
+                closeSelected();
+                m_ignoreRelease = true;
+                return;
+            }
             const auto SLOT = slotAt(POS);
             m_pressed       = true;
             m_dragMoved     = false;
@@ -796,6 +922,23 @@ void COverview::open() {
             return;
         // Click on a window picks it; a click on empty space just closes.
         close(PICK);
+    });
+
+    // A floating window (desktop mode) closing meanwhile: drop its thumbnail
+    // and close the gap. (Tiled ones go through the layout, which re-applies.)
+    m_closeListener = Event::bus()->m_events.window.close.listen([this](PHLWINDOW w) {
+        if (!m_active || !w)
+            return;
+        const auto BEFORE = m_floating.size();
+        std::erase_if(m_floating, [&](const auto& d) {
+            const auto W = windowOf(d);
+            return !W || W == w;
+        });
+        if (m_floating.size() != BEFORE)
+            g_pEventLoopManager->doLater([this, SESSION = WP<bool>{m_session}] {
+                if (const auto S = SESSION.lock(); S && *S)
+                    apply();
+            });
     });
 
     // Wheel: step the selection through all windows in reading order.
@@ -866,11 +1009,34 @@ void COverview::stopInput() {
     m_moveListener.reset();
     m_buttonListener.reset();
     m_axisListener.reset();
+    m_closeListener.reset();
 }
 
 void COverview::confirm() {
     if (m_active)
         close(m_selected.lock());
+}
+
+CBox COverview::closeButtonBox(const CBox& thumb) const {
+    // In the thumbnail's top right corner, like Windows' switcher; not on
+    // thumbnails too small to have room for it.
+    if (thumb.w < OV_CLOSE_SIZE * 3 || thumb.h < OV_CLOSE_SIZE * 3)
+        return {};
+    return CBox{thumb.x + thumb.w - OV_CLOSE_SIZE - 8, thumb.y + 8, OV_CLOSE_SIZE, OV_CLOSE_SIZE};
+}
+
+// Close the selected window and stay open, the selection moving on to the
+// next window (Q / Delete, or its close button).
+void COverview::closeSelected() {
+    const auto SEL = m_selected.lock();
+    const auto W   = windowOf(SEL);
+    if (!m_active || m_menuOpen || !W)
+        return;
+    const auto ORDER = mruOrder();
+    if (const auto IT = std::ranges::find(ORDER, SEL); IT != ORDER.end() && ORDER.size() > 1)
+        select(ORDER[(IT - ORDER.begin() + 1) % ORDER.size()]);
+    m_closeHover = false;
+    (void)Config::Actions::closeWindow(W);
 }
 
 void COverview::close(SP<SScrollingWindowData> pick) {
@@ -893,15 +1059,9 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     m_fadeStart = std::chrono::steady_clock::now();
     g_pHyprRenderer->setCursorFromName("left_ptr", true);
 
-    // Picking a minimized window restores it: drop the "minimized" tag (the
-    // state hyprflow keeps windows in line with) and show it.
-    if (const auto W = windowOf(pick); W && W->isHidden()) {
-        if (W->m_ruleApplicator->m_tagKeeper.applyTag("-minimized")) {
-            W->m_ruleApplicator->propertiesChanged(Desktop::Rule::RULE_PROP_TAG);
-            W->updateDecorationValues();
-        }
-        W->setHidden(false);
-    }
+    // Picking a minimized window restores it.
+    if (const auto W = windowOf(pick); W && W->isHidden())
+        restoreMinimized(W);
 
     // Zoom back in on the picked window; otherwise on the focused one (a window
     // opened meanwhile takes focus), or whatever was focused when we opened.
@@ -1449,6 +1609,11 @@ void COverview::draw(eRenderStage stage) {
                 if (const auto WINDOW = windowOf(SLOT.data.lock()))
                     WINDOW->m_animatingIn = true;
             }
+            // Focus changes meanwhile (drags) give shadows their colour back.
+            for (const auto& r : m_marked) {
+                if (const auto W = r.lock())
+                    fadeShadowOut(W);
+            }
         }
 
         // Dim the wallpaper behind the zoomed-out windows.
@@ -1526,6 +1691,20 @@ void COverview::draw(eRenderStage stage) {
             const CBox LOCAL  = HL.copy().translate(-MON->m_position).scale(SCALE).round();
             g_pHyprOpenGL->renderBorder(LOCAL.copy().expand(BORDER), Config::CGradientValueData{accentColor(ALPHA)},
                                         {.round = (int)std::round(WINDOW->rounding() * SCALE) + BORDER, .borderSize = BORDER, .a = ALPHA});
+
+            // Close button, once the highlight has arrived (red on hover).
+            if (const CBox BTN = closeButtonBox(global); !BTN.empty() && MS >= OV_HIGHLIGHT_MS && !m_menuOpen && !DRAG_WIN) {
+                const CBox B = BTN.copy().translate(-MON->m_position).scale(SCALE).round();
+                const auto BG = m_closeHover ? CHyprColor{0.86F, 0.24F, 0.24F, 0.95F * ALPHA} : CHyprColor{0.08F, 0.08F, 0.10F, 0.72F * ALPHA};
+                g_pHyprOpenGL->renderRect(B, BG, {.round = (int)(B.w / 2)});
+                const std::string KEY = "\x01close" + std::to_string((int)std::round(15 * SCALE));
+                auto              tex = m_textCache[KEY];
+                if (!tex)
+                    tex = m_textCache[KEY] = g_pHyprRenderer->renderText("×", CHyprColor{1, 1, 1, 1}, (int)std::round(15 * SCALE), false, "", 0, 400);
+                if (tex)
+                    g_pHyprOpenGL->renderTexture(tex, CBox{B.x + (B.w - tex->m_size.x) / 2.0, B.y + (B.h - tex->m_size.y) / 2.0, tex->m_size.x, tex->m_size.y}.round(),
+                                                 {.a = ALPHA});
+            }
         }
 
         if (!g_config.overview_titles->value())

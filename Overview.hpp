@@ -89,6 +89,18 @@ class COverview {
     bool                                                   m_switchMode = false;
     // Alt+Tab: watches for Alt being let go (any keyboard), then switches.
     SP<CEventLoopTimer>                                    m_altTimer;
+    // Alt+Tab pressed, switcher not shown yet: letting go of Alt quickly just
+    // flips windows (no overview); held a little longer, the switcher opens.
+    // m_pendingSteps counts Tab presses meanwhile (Shift+Tab back).
+    bool                                                   m_switchPending = false;
+    int                                                    m_pendingSteps  = 0;
+    SP<CEventLoopTimer>                                    m_showTimer;
+    void                                                   quickSwitch(int steps);
+    void                                                   showSwitcher(int steps);
+    // The selected window's close button (global logical), and its hover.
+    CBox                                                   closeButtonBox(const CBox& thumb) const;
+    bool                                                   m_closeHover = false;
+    void                                                   closeSelected();
     bool                                                   isFloating(const SP<SScrollingWindowData>& data) const;
     void                                                   collectFloating();
     std::vector<SP<SScrollingWindowData>>                  mruOrder() const;
@@ -150,6 +162,7 @@ class COverview {
     CHyprSignalListener                                    m_buttonListener;
     CHyprSignalListener                                    m_moveListener;
     CHyprSignalListener                                    m_axisListener;
+    CHyprSignalListener                                    m_closeListener; // floating windows closing while open
     CHyprSignalListener                                    m_renderListener;
 
     PHLMONITOR                                             monitor() const;
