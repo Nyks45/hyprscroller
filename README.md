@@ -16,6 +16,7 @@ Based on the `hyprscrolling` plugin from [hyprwm/hyprland-plugins](https://githu
 - Zen mode — show only the focused column (follows focus and new windows)
 - Optional vertical scrolling within columns (`column_scroll`), niri-style
 - niri-style overview: the whole strip zooms out (animated, no window resizing) so every column and stacked window is visible; pick with click/Enter, navigate with keys/wheel, drag windows to rearrange
+- Floating windows in the overview: with no tiled windows (e.g. hyprflow's desktop mode) they're laid out as a grid, like Windows' Task View, and glide back when it closes
 - Minimized (hidden) windows, e.g. from [hyprflow](https://github.com/Nyks45/hyprflow): their column closes up and focus skips them, and they come back in place; the overview shows them dimmed in their place, and picking one restores it
 - Focus history (back/forward navigation)
 - Per-window-class automatic column width rules
@@ -211,6 +212,7 @@ Send commands with the layout message dispatcher: `hl.dsp.layout("<message>")` i
 | `zen` | Show only the focused column (focus mode). Follows focus and new windows; toggle to exit |
 | `overview` | Toggle the overview: the workspace zooms out to show every column and window in place. Click a window (or move the highlight with arrows/hjkl/wheel and press Enter/Space) to focus it and zoom back in; Esc, Tab or a click on empty space closes. Drag a window onto another column to stack it there, or near a column's edge / past the ends to give it its own column. Works from fullscreen too: the fullscreen window leaves fullscreen and zooms out with the rest, and goes back to fullscreen if you pick it again (or press Esc). Right-click a window (or press the Menu key) for: focus, fullscreen, float, move to workspace, close, column width, window height, own column, move column left/right, pin/unpin, collapse/expand |
 | `overview_confirm` | Pick the highlighted window and close the overview |
+| `overview switch` / `overview switch prev` | Alt+Tab: open the overview with the most recently used window selected (or step to the next / previous one in that order); releasing Alt switches to it and closes. Bind it to `ALT + TAB` |
 | `pin left` | Pin current column to the left screen edge (stays fixed while scrolling) |
 | `pin right` | Pin current column to the right screen edge |
 | `unpin` | Remove pin from current column |

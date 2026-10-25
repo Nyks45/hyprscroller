@@ -37,6 +37,9 @@ class COverview {
 
     void toggle();
     void open();
+    // Alt+Tab: open (or step) with the most recently used windows first; the
+    // overview closes on picking the selection once Alt is released.
+    void switchWindows(bool reverse);
     // Zoom back in. `pick`, if set, becomes the focused window; otherwise the
     // currently focused window is kept.
     void close(SP<SScrollingWindowData> pick);
@@ -79,6 +82,16 @@ class COverview {
     std::chrono::steady_clock::time_point                  m_fadeStart;
 
     std::vector<SSlot>                                     m_slots;
+    // Floating windows (desktop mode) stand in as window data of a column that
+    // isn't in the layout, while open; their layoutBox is where they were.
+    SP<SColumnData>                                        m_floatingColumn;
+    std::vector<SP<SScrollingWindowData>>                  m_floating;
+    bool                                                   m_switchMode = false;
+    // Alt+Tab: watches for Alt being let go (any keyboard), then switches.
+    SP<CEventLoopTimer>                                    m_altTimer;
+    bool                                                   isFloating(const SP<SScrollingWindowData>& data) const;
+    void                                                   collectFloating();
+    std::vector<SP<SScrollingWindowData>>                  mruOrder() const;
     std::vector<SColumnSlot>                               m_columnSlots;
 
     WP<SScrollingWindowData>                               m_selected; // keyboard/hover selection (highlighted)

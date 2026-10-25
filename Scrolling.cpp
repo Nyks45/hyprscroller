@@ -2138,7 +2138,11 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
     } else if (ARGS[0] == "overview_confirm") {
         m_overview->confirm();
     } else if (ARGS[0] == "overview") {
-        m_overview->toggle();
+        // "overview switch [prev]": Alt+Tab (closes on releasing Alt).
+        if (ARGS[1] == "switch")
+            m_overview->switchWindows(ARGS[2] == "prev");
+        else
+            m_overview->toggle();
     }
     return {};
 }

@@ -8,6 +8,8 @@
 #include <linux/input-event-codes.h>
 
 #include <hyprland/src/desktop/Workspace.hpp>
+#include <hyprland/src/desktop/history/WindowHistoryTracker.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
 #include <hyprland/src/desktop/rule/windowRule/WindowRuleApplicator.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
@@ -119,7 +121,10 @@ COverview::COverview(CScrollingLayout* layout) : m_layout(layout) {
     ;
 }
 
-COverview::~COverview() = default;
+COverview::~COverview() {
+    if (m_altTimer)
+        g_pEventLoopManager->removeTimer(m_altTimer);
+}
 
 PHLMONITOR COverview::monitor() const {
     const auto PARENT = m_layout->m_parent.lock();
@@ -161,6 +166,54 @@ void COverview::computeSlots() {
             g_layoutShowsMinimized = false;
         }
     } reset;
+
+    // No tiled windows but floating ones (desktop mode): a grid of them, like
+    // Windows' Task View, in reading order of where they are.
+    if (std::ranges::none_of(DATA->columns, [](const auto& c) { return !c->windowDatas.empty(); }) && !m_floating.empty()) {
+        std::vector<SP<SScrollingWindowData>> wins = m_floating;
+        std::ranges::sort(wins, [](const auto& a, const auto& b) {
+            const auto MA = a->layoutBox.middle(), MB = b->layoutBox.middle();
+            return std::abs(MA.y - MB.y) > 120 ? MA.y < MB.y : MA.x < MB.x;
+        });
+        const double ZOOM  = std::clamp((double)g_config.overview_zoom->value(), 0.1, 1.0);
+        const double AVAIL_W = WA.w - 2 * OV_MARGIN, AVAIL_H = WA.h - 2 * OV_MARGIN;
+        const size_t N       = wins.size();
+
+        // The column count that gives the biggest thumbnails.
+        size_t bestCols = 1;
+        double bestScale = 0;
+        for (size_t cols = 1; cols <= N; ++cols) {
+            const size_t ROWS  = (N + cols - 1) / cols;
+            const double CELLW = (AVAIL_W - OV_GAP * 3 * (cols - 1)) / cols, CELLH = (AVAIL_H - OV_GAP * 3 * (ROWS - 1)) / ROWS;
+            double       scale = ZOOM;
+            for (const auto& w : wins)
+                scale = std::min({scale, CELLW / std::max(1.0, w->layoutBox.w), CELLH / std::max(1.0, w->layoutBox.h)});
+            if (scale > bestScale) {
+                bestScale = scale;
+                bestCols  = cols;
+            }
+        }
+        const size_t ROWS  = (N + bestCols - 1) / bestCols;
+        const double CELLW = (AVAIL_W - OV_GAP * 3 * (bestCols - 1)) / bestCols, CELLH = (AVAIL_H - OV_GAP * 3 * (ROWS - 1)) / ROWS;
+        const double GRID_H = ROWS * CELLH + (ROWS - 1) * OV_GAP * 3;
+        double       y      = WA.y + (WA.h - GRID_H) / 2.0;
+        for (size_t r = 0; r < ROWS; ++r) {
+            const size_t FIRST = r * bestCols, COUNT = std::min(bestCols, N - FIRST);
+            const double ROW_W = COUNT * CELLW + (COUNT - 1) * OV_GAP * 3;
+            double       x     = WA.x + (WA.w - ROW_W) / 2.0;
+            for (size_t i = FIRST; i < FIRST + COUNT; ++i) {
+                // Each window keeps its proportions, at its own scale in its cell.
+                const auto&  W     = wins[i];
+                const double SCALE = std::min({ZOOM, CELLW / std::max(1.0, W->layoutBox.w), CELLH / std::max(1.0, W->layoutBox.h)});
+                const Vector2D SZ  = W->layoutBox.size() * SCALE;
+                const CBox     BOX{x + (CELLW - SZ.x) / 2.0, y + (CELLH - SZ.y) / 2.0, SZ.x, SZ.y};
+                m_slots.push_back({.data = W, .column = m_floatingColumn, .box = BOX.copy().round()});
+                x += CELLW + OV_GAP * 3;
+            }
+            y += CELLH + OV_GAP * 3;
+        }
+        return;
+    }
 
     // Same left-to-right order you see on screen: pinned-left, scrollable, pinned-right.
     std::vector<SP<SColumnData>> order;
@@ -319,6 +372,96 @@ void COverview::step() {
     damage();
 }
 
+bool COverview::isFloating(const SP<SScrollingWindowData>& data) const {
+    return data && m_floatingColumn && data->column.lock() == m_floatingColumn;
+}
+
+// The workspace's floating windows (desktop mode), with where they are now.
+void COverview::collectFloating() {
+    m_floating.clear();
+    if (!m_floatingColumn) {
+        m_floatingColumn       = makeShared<SColumnData>(m_layout);
+        m_floatingColumn->self = m_floatingColumn;
+    }
+    const auto PARENT = m_layout->m_parent.lock();
+    const auto WS     = PARENT && PARENT->space() ? PARENT->space()->workspace() : nullptr;
+    if (!WS)
+        return;
+    for (const auto& w : Desktop::windowState()->windows()) {
+        if (!w->m_isMapped || !w->m_isFloating || w->m_workspace != WS || w->isX11OverrideRedirect() || !w->layoutTarget())
+            continue;
+        auto data       = makeShared<SScrollingWindowData>(w->layoutTarget(), m_floatingColumn);
+        data->layoutBox = CBox{w->positionAnimation()->goal(), w->sizeAnimation()->goal()};
+        m_floating.push_back(data);
+    }
+}
+
+// The shown windows, most recently used first (Alt+Tab's order).
+std::vector<SP<SScrollingWindowData>> COverview::mruOrder() const {
+    const auto&                                         HISTORY = Desktop::History::windowTracker()->fullHistory(); // oldest first
+    std::vector<std::pair<size_t, SP<SScrollingWindowData>>> ranked;
+    for (const auto& SLOT : m_slots) {
+        const auto DATA = SLOT.data.lock();
+        const auto W    = windowOf(DATA);
+        if (!W)
+            continue;
+        size_t rank = SIZE_MAX;
+        for (size_t i = HISTORY.size(); i-- > 0;) {
+            if (HISTORY[i].lock() == W) {
+                rank = HISTORY.size() - 1 - i;
+                break;
+            }
+        }
+        ranked.emplace_back(rank, DATA);
+    }
+    std::ranges::stable_sort(ranked, {}, &std::pair<size_t, SP<SScrollingWindowData>>::first);
+    std::vector<SP<SScrollingWindowData>> out;
+    for (auto& [_, d] : ranked)
+        out.push_back(d);
+    return out;
+}
+
+void COverview::switchWindows(bool reverse) {
+    if (!m_active) {
+        open();
+        if (!m_active)
+            return;
+        m_switchMode     = true;
+
+        // Hyprland has no modifier-change event: poll while open, and switch
+        // to the selection as soon as no keyboard holds Alt any more.
+        if (!m_altTimer) {
+            m_altTimer = makeShared<CEventLoopTimer>(
+                std::nullopt,
+                [this, ALIVE = WP<bool>{m_alive}](SP<CEventLoopTimer> self, void*) {
+                    if (!ALIVE.lock() || !m_active || !m_switchMode)
+                        return;
+                    const bool ALT = std::ranges::any_of(g_pInputManager->m_keyboards, [](const auto& kb) { return kb && (kb->getModifiers() & HL_MODIFIER_ALT); });
+                    if (!ALT) {
+                        confirm();
+                        return;
+                    }
+                    self->updateTimeout(std::chrono::milliseconds(25));
+                },
+                nullptr);
+            g_pEventLoopManager->addTimer(m_altTimer);
+        }
+        m_altTimer->updateTimeout(std::chrono::milliseconds(25));
+        const auto ORDER = mruOrder();
+        // Starts on the window used before this one, like Alt+Tab.
+        if (!ORDER.empty())
+            select(ORDER.size() > 1 ? ORDER[reverse ? ORDER.size() - 1 : 1] : ORDER.front());
+        return;
+    }
+    m_switchMode     = true;
+    const auto ORDER = mruOrder();
+    if (ORDER.empty())
+        return;
+    const auto   IT  = std::ranges::find(ORDER, m_selected.lock());
+    const size_t IDX = IT == ORDER.end() ? 0 : IT - ORDER.begin();
+    select(ORDER[(IDX + (reverse ? ORDER.size() - 1 : 1)) % ORDER.size()]);
+}
+
 void COverview::toggle() {
     if (m_active)
         close(nullptr);
@@ -346,7 +489,11 @@ void COverview::open() {
     if (!PARENT || !PARENT->space())
         return;
     const auto WS = PARENT->space()->workspace();
-    if (!WS || m_layout->m_scrollingData->columns.empty())
+    if (!WS)
+        return;
+    collectFloating();
+    const bool TILED = std::ranges::any_of(m_layout->m_scrollingData->columns, [](const auto& c) { return !c->windowDatas.empty(); });
+    if (!TILED && m_floating.empty())
         return;
 
     // A fullscreen/maximized window covers the strip: leave fullscreen first
@@ -367,9 +514,21 @@ void COverview::open() {
         return;
     }
 
-    const auto FOCUSED = m_layout->focusedWindowData();
-    m_initialFocus     = FOCUSED ? FOCUSED->target : WP<Layout::ITarget>{};
-    m_selected         = FOCUSED ? FOCUSED : m_layout->m_scrollingData->columns.front()->windowDatas.front();
+    auto FOCUSED = m_layout->focusedWindowData();
+    if (!FOCUSED) {
+        const auto FW = Desktop::focusState()->window();
+        for (const auto& f : m_floating) {
+            if (windowOf(f) == FW)
+                FOCUSED = f;
+        }
+    }
+    m_initialFocus = FOCUSED ? FOCUSED->target : WP<Layout::ITarget>{};
+    if (FOCUSED)
+        m_selected = FOCUSED;
+    else if (TILED)
+        m_selected = std::ranges::find_if(m_layout->m_scrollingData->columns, [](const auto& c) { return !c->windowDatas.empty(); })->get()->windowDatas.front();
+    else
+        m_selected = m_floating.front();
     m_highlightLast    = {};
     m_dragging.reset();
     m_pressed       = false;
@@ -390,6 +549,11 @@ void COverview::open() {
     // clients or keybinds. Modifier keys and releases pass through so no
     // modifier gets stuck.
     m_keyListener = Event::bus()->m_events.input.keyboard.key.listen([this](IKeyboard::SKeyEvent ev, Event::SCallbackInfo& info) {
+        // Alt+Tab: letting go of Alt switches to the selected window.
+        if (m_active && m_switchMode && ev.state == WL_KEYBOARD_KEY_STATE_RELEASED && (ev.keycode == KEY_LEFTALT || ev.keycode == KEY_RIGHTALT)) {
+            confirm();
+            return;
+        }
         if (!m_active || ev.state != WL_KEYBOARD_KEY_STATE_PRESSED)
             return;
 
@@ -456,6 +620,13 @@ void COverview::open() {
             return;
         }
 
+        if (m_switchMode && (sym == XKB_KEY_Tab || sym == XKB_KEY_ISO_Left_Tab)) {
+            const auto KB    = g_pSeatManager->m_keyboard.lock();
+            const bool SHIFT = sym == XKB_KEY_ISO_Left_Tab || (KB && (KB->getModifiers() & HL_MODIFIER_SHIFT));
+            switchWindows(SHIFT);
+            return;
+        }
+
         switch (sym) {
             case XKB_KEY_Escape:
             case XKB_KEY_Tab:
@@ -499,7 +670,7 @@ void COverview::open() {
             return;
         }
 
-        if (m_pressed && !m_dragMoved && pos.distance(m_pressPos) > OV_DRAG_THRESHOLD && m_dragging.lock()) {
+        if (m_pressed && !m_dragMoved && pos.distance(m_pressPos) > OV_DRAG_THRESHOLD && m_dragging.lock() && !isFloating(m_dragging.lock())) {
             m_dragMoved = true;
             // Lift the dragged window out of the animation and above its
             // neighbours. Tiled windows have no z-order of their own; the
@@ -688,6 +859,7 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     m_dragging.reset();
     m_menuOpen = false;
     m_menuItems.clear();
+    m_switchMode = false;
     m_fadeStart = std::chrono::steady_clock::now();
     g_pHyprRenderer->setCursorFromName("left_ptr", true);
 
@@ -726,7 +898,17 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     // Leaving overview mode: this applies the real layout boxes again, animated.
     m_layout->m_scrollingData->recalculate(!g_config.overview_animate->value());
 
-    if (pick && target)
+    // Floating windows go back to where they were; a picked one comes forward.
+    for (const auto& F : m_floating) {
+        if (const auto T = F->target.lock(); T && T->window() && T->window()->m_isMapped)
+            T->setPositionGlobal(F->layoutBox);
+    }
+    if (pick && target && isFloating(pick)) {
+        if (const auto W = target->window()) {
+            Desktop::focusState()->fullWindowFocus(W, Desktop::FOCUS_REASON_OTHER);
+            Desktop::windowState()->raise(W);
+        }
+    } else if (pick && target)
         m_layout->focusTargetUpdate(target);
 
     // The window that was fullscreen when we opened goes back to fullscreen
@@ -927,7 +1109,8 @@ void COverview::setMenuItems(std::vector<SMenuItem>&& items) {
 }
 
 void COverview::openMenu(const SP<SScrollingWindowData>& data, const Vector2D& pos) {
-    if (!data)
+    // The menu's items are column operations; floating windows have none.
+    if (!data || isFloating(data))
         return;
     select(data);
     m_menuOpen   = true;
