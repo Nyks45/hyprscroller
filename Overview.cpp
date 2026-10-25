@@ -374,7 +374,9 @@ void COverview::apply(bool instant) {
         // the overview is up), would fly in from far away; they appear at
         // their slot instead.
         const CBox CURRENT{WINDOW->positionAnimation()->value(), WINDOW->sizeAnimation()->value()};
-        const bool APPEAR = DATA->parked || DATA->layoutBox.empty();
+        // Minimized windows aren't on screen: they appear in their slot (drawn
+        // from their real box they'd flash up at full size first).
+        const bool APPEAR = DATA->parked || DATA->layoutBox.empty() || WINDOW->isHidden();
         anims[DATA.get()] = {.from = APPEAR ? SLOT.box : CURRENT, .to = SLOT.box};
         DATA->parked      = false;
     }
@@ -1638,11 +1640,17 @@ void COverview::draw(eRenderStage stage) {
         WINDOW->m_animatingIn = false;
         return true;
     });
+    // Closing: borders and shadows come back as the windows near full size,
+    // with their title bars (hyprflow fades those in over the last ~15%),
+    // rather than after they've settled.
     if (!m_active)
         std::erase_if(m_marked, [this](const PHLWINDOWREF& r) {
             const auto W = r.lock();
-            if (W && std::ranges::any_of(m_restoring, [&](const auto& x) { return x.lock() == W; }))
-                return false;
+            if (W && std::ranges::any_of(m_restoring, [&](const auto& x) { return x.lock() == W; })) {
+                const Vector2D NOW = W->sizeAnimation()->value(), GOAL = W->sizeAnimation()->goal();
+                if (GOAL.x < 1 || GOAL.y < 1 || std::min(NOW.x / GOAL.x, NOW.y / GOAL.y) < 0.85)
+                    return false;
+            }
             if (W)
                 markInOverview(W, false);
             return true;
