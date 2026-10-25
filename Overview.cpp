@@ -8,6 +8,8 @@
 #include <linux/input-event-codes.h>
 
 #include <hyprland/src/desktop/Workspace.hpp>
+#include <hyprland/src/desktop/rule/windowRule/WindowRuleApplicator.hpp>
+#include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/event/EventBus.hpp>
@@ -97,6 +99,17 @@ static int msSince(std::chrono::steady_clock::time_point t) {
     return (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t).count();
 }
 
+// IHyprRenderer::renderWindow is protected; its "standalone" mode is the only
+// way to draw a hidden window. Reach it through a derived class's using-declaration.
+struct SRendererAccess : Render::IHyprRenderer {
+    using Render::IHyprRenderer::renderWindow;
+};
+
+static void renderHiddenWindow(const PHLWINDOW& window, const PHLMONITOR& monitor) {
+    const auto RENDER = &SRendererAccess::renderWindow;
+    (g_pHyprRenderer.get()->*RENDER)(window, monitor, Time::steadyNow(), true, Render::RENDER_PASS_ALL, false, true);
+}
+
 static PHLWINDOW windowOf(const SP<SScrollingWindowData>& data) {
     const auto TARGET = data ? data->target.lock() : nullptr;
     return TARGET ? TARGET->window() : nullptr;
@@ -139,6 +152,15 @@ void COverview::computeSlots() {
     const auto& DATA   = m_layout->m_scrollingData;
     const CBox  WA     = PARENT->space()->workArea();
     const CBox  USABLE = m_layout->usableArea();
+
+    // Minimized windows get their real place here (drawn dimmed, see the
+    // render hook); picking one restores it.
+    g_layoutShowsMinimized = true;
+    struct SReset {
+        ~SReset() {
+            g_layoutShowsMinimized = false;
+        }
+    } reset;
 
     // Same left-to-right order you see on screen: pinned-left, scrollable, pinned-right.
     std::vector<SP<SColumnData>> order;
@@ -620,6 +642,17 @@ void COverview::open() {
                 return;
             }
 
+            // Hyprland doesn't draw hidden windows; draw the minimized ones
+            // into their slots ourselves (draw() dims them).
+            if (stage == RENDER_POST_WINDOWS && m_active) {
+                for (const auto& SLOT : m_slots) {
+                    const auto DATA   = SLOT.data.lock();
+                    const auto WINDOW = windowOf(DATA);
+                    if (WINDOW && WINDOW->isHidden() && WINDOW->m_isMapped)
+                        renderHiddenWindow(WINDOW, MON);
+                }
+            }
+
             g_pHyprRenderer->m_renderPass.add(makeUnique<COverviewPassElement>(this, stage));
         });
     }
@@ -657,6 +690,16 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     m_menuItems.clear();
     m_fadeStart = std::chrono::steady_clock::now();
     g_pHyprRenderer->setCursorFromName("left_ptr", true);
+
+    // Picking a minimized window restores it: drop the "minimized" tag (the
+    // state hyprflow keeps windows in line with) and show it.
+    if (const auto W = windowOf(pick); W && W->isHidden()) {
+        if (W->m_ruleApplicator->m_tagKeeper.applyTag("-minimized")) {
+            W->m_ruleApplicator->propertiesChanged(Desktop::Rule::RULE_PROP_TAG);
+            W->updateDecorationValues();
+        }
+        W->setHidden(false);
+    }
 
     // Zoom back in on the picked window; otherwise on the focused one (a window
     // opened meanwhile takes focus), or whatever was focused when we opened.
@@ -1231,6 +1274,11 @@ void COverview::draw(eRenderStage stage) {
 
         // Follow the window's drawn box so labels move with the zoom.
         CBox global{WINDOW->positionAnimation()->value(), WINDOW->sizeAnimation()->value()};
+
+        if (WINDOW->isHidden() && m_active) {
+            const CBox LOCAL = global.copy().translate(-MON->m_position).scale(SCALE).round();
+            g_pHyprOpenGL->renderRect(LOCAL, CHyprColor{0, 0, 0, 0.55F * ALPHA}, {.round = (int)std::round(WINDOW->rounding() * SCALE)});
+        }
 
         if (DATA == SELECTED && m_active) {
             // Slide the highlight from where it was to this window.

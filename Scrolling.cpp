@@ -272,26 +272,51 @@ void SColumnData::down(SP<SScrollingWindowData> w) {
     }
 }
 
+// Minimized windows (hidden, e.g. by hyprflow) stay in their column so they
+// come back in place, but take no room and are skipped when moving focus.
+bool SScrollingWindowData::minimized() const {
+    if (g_layoutShowsMinimized)
+        return false;
+    const auto T = target.lock();
+    const auto W = T ? T->window() : nullptr;
+    return W && W->isHidden();
+}
+
+bool SColumnData::minimized() const {
+    return !windowDatas.empty() && std::ranges::all_of(windowDatas, [](const auto& wd) { return wd->minimized(); });
+}
+
+SP<SScrollingWindowData> SColumnData::firstShown() const {
+    const auto IT = std::ranges::find_if(windowDatas, [](const auto& wd) { return !wd->minimized(); });
+    return IT == windowDatas.end() ? nullptr : *IT;
+}
+
+SP<SScrollingWindowData> SColumnData::lastShown() const {
+    const auto IT = std::ranges::find_if(windowDatas.rbegin(), windowDatas.rend(), [](const auto& wd) { return !wd->minimized(); });
+    return IT == windowDatas.rend() ? nullptr : *IT;
+}
+
 SP<SScrollingWindowData> SColumnData::next(SP<SScrollingWindowData> w) {
-    if (windowDatas.empty())
+    const auto IT = std::ranges::find(windowDatas, w);
+    if (IT == windowDatas.end())
         return nullptr;
 
-    for (size_t i = 0; i + 1 < windowDatas.size(); ++i) {
-        if (windowDatas[i] != w)
-            continue;
-
-        return windowDatas[i + 1];
+    for (auto it = IT + 1; it != windowDatas.end(); ++it) {
+        if (!(*it)->minimized())
+            return *it;
     }
 
     return nullptr;
 }
 
 SP<SScrollingWindowData> SColumnData::prev(SP<SScrollingWindowData> w) {
-    for (size_t i = 1; i < windowDatas.size(); ++i) {
-        if (windowDatas[i] != w)
-            continue;
+    const auto IT = std::ranges::find(windowDatas, w);
+    if (IT == windowDatas.end())
+        return nullptr;
 
-        return windowDatas[i - 1];
+    for (auto it = std::make_reverse_iterator(IT); it != windowDatas.rend(); ++it) {
+        if (!(*it)->minimized())
+            return *it;
     }
 
     return nullptr;
@@ -329,32 +354,35 @@ void SScrollingLayoutData::remove(SP<SColumnData> c) {
     std::erase(columns, c);
 }
 
+// Neighbouring columns, skipping ones whose windows are all minimized.
 SP<SColumnData> SScrollingLayoutData::next(SP<SColumnData> c) {
-    for (size_t i = 0; i < columns.size(); ++i) {
-        if (columns[i] != c)
-            continue;
+    const auto IT = std::ranges::find(columns, c);
+    if (IT == columns.end())
+        return nullptr;
 
-        if (i == columns.size() - 1)
-            return nullptr;
-
-        return columns[i + 1];
+    for (auto it = IT + 1; it != columns.end(); ++it) {
+        if (!(*it)->minimized())
+            return *it;
     }
 
     return nullptr;
 }
 
 SP<SColumnData> SScrollingLayoutData::prev(SP<SColumnData> c) {
-    for (size_t i = 0; i < columns.size(); ++i) {
-        if (columns[i] != c)
-            continue;
+    const auto IT = std::ranges::find(columns, c);
+    if (IT == columns.end())
+        return nullptr;
 
-        if (i == 0)
-            return nullptr;
-
-        return columns[i - 1];
+    for (auto it = std::make_reverse_iterator(IT); it != columns.rend(); ++it) {
+        if (!(*it)->minimized())
+            return *it;
     }
 
     return nullptr;
+}
+
+size_t SScrollingLayoutData::shownColumns() const {
+    return std::ranges::count_if(columns, [](const auto& c) { return !c->minimized(); });
 }
 
 double SScrollingLayoutData::peekWidth(double usableW) {
@@ -377,6 +405,8 @@ double SScrollingLayoutData::fillScale(double usableW) {
     double       fixed = 0;
     double       pinned = 0;
     for (const auto& COL : columns) {
+        if (COL->minimized())
+            continue;
         if (COL->pinned != PIN_NONE)
             pinned += COL->collapsed ? g_config.collapsed_width->value() : usableW * COL->columnWidth;
         else if (COL->collapsed)
@@ -393,11 +423,13 @@ double SScrollingLayoutData::fillScale(double usableW) {
 }
 
 double SScrollingLayoutData::colWidth(const SP<SColumnData>& c, double usableW) {
+    if (c->minimized())
+        return 0;
     if (c->collapsed)
         return g_config.collapsed_width->value();
     if (c->pinned != PIN_NONE)
         return usableW * c->columnWidth;
-    if (g_config.fullscreen_on_one_column->value() && columns.size() == 1)
+    if (g_config.fullscreen_on_one_column->value() && shownColumns() == 1)
         return usableW;
     return flexWidth(c, usableW, peekWidth(usableW)) * fillScale(usableW);
 }
@@ -406,9 +438,13 @@ double SScrollingLayoutData::rowHeights(const SP<SColumnData>& c, double usableH
     out.clear();
 
     if (!g_config.column_scroll->value()) {
-        // Classic: window sizes are shares of the column and sum to 1.
+        // Classic: window sizes are shares of the column and sum to 1 (over
+        // the shown windows; minimized ones get no height).
+        double shares = 0;
         for (const auto& WD : c->windowDatas)
-            out.push_back(WD->windowSize * usableH);
+            shares += WD->minimized() ? 0.0 : WD->windowSize;
+        for (const auto& WD : c->windowDatas)
+            out.push_back(WD->minimized() || shares <= 0 ? 0.0 : WD->windowSize / shares * usableH);
         return usableH;
     }
 
@@ -416,13 +452,20 @@ double SScrollingLayoutData::rowHeights(const SP<SColumnData>& c, double usableH
     // peek strip for each neighbour it has (above and/or below), so a focused
     // window leaves exactly one peek of every neighbour in view. The column
     // can be taller than the screen and scrolls vertically.
-    const size_t N     = c->windowDatas.size();
+    // Minimized windows get no height and don't count as neighbours.
+    std::vector<size_t> shown;
+    for (size_t i = 0; i < c->windowDatas.size(); ++i) {
+        if (!c->windowDatas[i]->minimized())
+            shown.push_back(i);
+    }
+    out.assign(c->windowDatas.size(), 0.0);
+    const size_t N     = shown.size();
     const double PEEK  = N > 1 ? std::clamp((double)g_config.peek_width->value(), 0.0, usableH / 4.0) : 0.0;
     double       total = 0;
-    for (size_t i = 0; i < N; ++i) {
-        const double PEEKS = (i > 0 ? PEEK : 0.0) + (i + 1 < N ? PEEK : 0.0);
-        out.push_back(c->windowDatas[i]->windowSize * (usableH - PEEKS));
-        total += out.back();
+    for (size_t k = 0; k < N; ++k) {
+        const double PEEKS = (k > 0 ? PEEK : 0.0) + (k + 1 < N ? PEEK : 0.0);
+        out[shown[k]]      = c->windowDatas[shown[k]]->windowSize * (usableH - PEEKS);
+        total += out[shown[k]];
     }
 
     // A column shorter than the screen is stretched to fill it.
@@ -446,6 +489,8 @@ void SScrollingLayoutData::placeColumn(const SP<SColumnData>& c, double x, doubl
         const auto& WDATA = c->windowDatas[i];
         WDATA->layoutBox  = CBox{x, currentTop, width, heights[i]}.translate(origin);
         currentTop += heights[i];
+        if (WDATA->minimized())
+            continue; // keeps its last geometry, so it reappears without a jump
         applyLayoutBox(WDATA, forceInstant);
     }
 }
@@ -634,6 +679,20 @@ void SScrollingLayoutData::recalculate(bool forceInstant) {
 
     const CBox   USABLE    = layout->usableArea();
     const auto   WORKAREA  = parent->space()->workArea();
+
+    // A window was minimized or restored: the strip changed width under the
+    // camera. Keep the focused column in view, or with nothing focused (the
+    // minimized window had focus) at least don't scroll past the ends.
+    size_t minimizedNow = 0;
+    for (const auto& COL : columns)
+        minimizedNow += std::ranges::count_if(COL->windowDatas, [](const auto& wd) { return wd->minimized(); });
+    if (minimizedNow != minimizedCount) {
+        minimizedCount = minimizedNow;
+        if (const auto FOCUSED = layout->focusedWindowData(); FOCUSED && FOCUSED->column.lock() && !FOCUSED->minimized())
+            centerOrFitCol(FOCUSED->column.lock());
+        else
+            leftOffset = std::clamp((double)leftOffset, 0.0, std::max(0.0, maxWidth() - scrollWidth()));
+    }
 
     // Overview: windows sit at their zoomed-out slots (see Overview.cpp);
     // re-target them so windows opening/closing meanwhile stay in place.
@@ -1328,12 +1387,12 @@ SP<Layout::ITarget> CScrollingLayout::getNextCandidate(SP<Layout::ITarget> old) 
 
     // Try adjacent columns
     auto NEXTCOL = m_scrollingData->next(COL);
-    if (NEXTCOL && !NEXTCOL->windowDatas.empty())
-        return NEXTCOL->windowDatas.front()->target.lock();
+    if (const auto WD = NEXTCOL ? NEXTCOL->firstShown() : nullptr)
+        return WD->target.lock();
 
     auto PREVCOL = m_scrollingData->prev(COL);
-    if (PREVCOL && !PREVCOL->windowDatas.empty())
-        return PREVCOL->windowDatas.back()->target.lock();
+    if (const auto WD = PREVCOL ? PREVCOL->lastShown() : nullptr)
+        return WD->target.lock();
 
     return nullptr;
 }
@@ -1406,9 +1465,7 @@ SP<SScrollingWindowData> CScrollingLayout::findBestNeighbor(SP<SScrollingWindowD
         auto topmost = std::ranges::min_element(overlappingWindows, std::less<>{}, [](const SP<SScrollingWindowData>& w) { return w->layoutBox.y; });
         return *topmost;
     }
-    if (!pTargetCol->windowDatas.empty())
-        return pTargetCol->windowDatas.front();
-    return nullptr;
+    return pTargetCol->firstShown();
 }
 
 Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
@@ -1432,7 +1489,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             m_scrollingData->centerOrFitCol(COL);
             m_scrollingData->recalculate();
 
-            auto target = COL->windowDatas.front()->target.lock();
+            auto target = COL->firstShown() ? COL->firstShown()->target.lock() : nullptr;
             focusTargetUpdate(target);
             if (target && target->window())
                 Pointer::mgr()->warpTo(target->window()->middle());
@@ -1442,10 +1499,11 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             auto WDATA = focusedWindowData();
 
             if (!WDATA) {
-                if (m_scrollingData->columns.size() > 0) {
-                    m_scrollingData->centerOrFitCol(m_scrollingData->columns.back());
+                const auto LAST = std::ranges::find_if(m_scrollingData->columns.rbegin(), m_scrollingData->columns.rend(), [](const auto& c) { return !c->minimized(); });
+                if (LAST != m_scrollingData->columns.rend()) {
+                    m_scrollingData->centerOrFitCol(*LAST);
                     m_scrollingData->recalculate();
-                    auto target = m_scrollingData->columns.back()->windowDatas.back()->target.lock();
+                    auto target = (*LAST)->lastShown()->target.lock();
                     focusTargetUpdate(target);
                     if (target && target->window())
                         Pointer::mgr()->warpTo(target->window()->middle());
@@ -1461,7 +1519,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             m_scrollingData->centerOrFitCol(COL);
             m_scrollingData->recalculate();
 
-            auto target = COL->windowDatas.back()->target.lock();
+            auto target = COL->lastShown() ? COL->lastShown()->target.lock() : nullptr;
             focusTargetUpdate(target);
             if (target && target->window())
                 Pointer::mgr()->warpTo(target->window()->middle());
@@ -1807,7 +1865,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 if (!PREV) {
                     if (!WRAP)
                         break;
-                    PREV = WDATA->column.lock()->windowDatas.back();
+                    PREV = WDATA->column.lock()->lastShown();
                 }
 
                 focusTargetUpdate(PREV->target.lock());
@@ -1823,7 +1881,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                 if (!NEXT) {
                     if (!WRAP)
                         break;
-                    NEXT = WDATA->column.lock()->windowDatas.front();
+                    NEXT = WDATA->column.lock()->firstShown();
                 }
 
                 focusTargetUpdate(NEXT->target.lock());

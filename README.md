@@ -16,6 +16,7 @@ Based on the `hyprscrolling` plugin from [hyprwm/hyprland-plugins](https://githu
 - Zen mode — show only the focused column (follows focus and new windows)
 - Optional vertical scrolling within columns (`column_scroll`), niri-style
 - niri-style overview: the whole strip zooms out (animated, no window resizing) so every column and stacked window is visible; pick with click/Enter, navigate with keys/wheel, drag windows to rearrange
+- Minimized (hidden) windows, e.g. from [hyprflow](https://github.com/Nyks45/hyprflow): their column closes up and focus skips them, and they come back in place; the overview shows them dimmed in their place, and picking one restores it
 - Focus history (back/forward navigation)
 - Per-window-class automatic column width rules
 - Column-level workspace movement

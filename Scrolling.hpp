@@ -12,6 +12,10 @@
 
 class CScrollingLayout;
 class COverview;
+
+// Set while the overview lays out its slots: minimized windows count as shown
+// there (in their place, dimmed), unlike in the strip itself.
+inline bool g_layoutShowsMinimized = false;
 struct SColumnData;
 
 enum ePinState : uint8_t {
@@ -30,6 +34,8 @@ struct SScrollingWindowData {
     float               windowSize = 1.F;
 
     CBox                layoutBox;
+    // Hidden window (minimized): keeps its place, takes no room.
+    bool                minimized() const;
     // Moved off-screen (zen mode); warped back instead of animated.
     bool                parked = false;
 };
@@ -55,6 +61,11 @@ struct SColumnData {
     void                                  up(SP<SScrollingWindowData> w);
     void                                  down(SP<SScrollingWindowData> w);
 
+    // Every window minimized: the column takes no width.
+    bool                                  minimized() const;
+    SP<SScrollingWindowData>              firstShown() const;
+    SP<SScrollingWindowData>              lastShown() const;
+
     SP<SScrollingWindowData>              next(SP<SScrollingWindowData> w);
     SP<SScrollingWindowData>              prev(SP<SScrollingWindowData> w);
 
@@ -79,6 +90,8 @@ struct SScrollingLayoutData {
 
         std::vector<SP<SColumnData>> columns;
         float                        leftOffset                  = 0;
+        // Minimized windows at the last recalculate (to re-fit when it changes).
+        size_t                       minimizedCount              = 0;
 
     SP<SColumnData>              add();
     SP<SColumnData>              add(int after);
@@ -103,6 +116,8 @@ struct SScrollingLayoutData {
     void                         placeColumn(const SP<SColumnData>& c, double x, double width, const Vector2D& origin, double usableH, bool forceInstant);
     // column_scroll: scroll a column vertically so `w` is in view.
     void                         fitRow(const SP<SColumnData>& c, const SP<SScrollingWindowData>& w);
+    // Columns with a window that isn't minimized.
+    size_t                       shownColumns() const;
     SP<SColumnData>              next(SP<SColumnData> c);
     SP<SColumnData>              prev(SP<SColumnData> c);
     SP<SColumnData>              atCenter();
