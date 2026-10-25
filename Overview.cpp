@@ -124,8 +124,12 @@ COverview::COverview(CScrollingLayout* layout) : m_layout(layout) {
 }
 
 COverview::~COverview() {
-    if (m_altTimer)
-        g_pEventLoopManager->removeTimer(m_altTimer);
+    // Timers outliving this (and the plugin, when it's unloaded) would call
+    // into freed code.
+    for (const auto& t : {m_altTimer, m_showTimer}) {
+        if (t)
+            g_pEventLoopManager->removeTimer(t);
+    }
 }
 
 PHLMONITOR COverview::monitor() const {
