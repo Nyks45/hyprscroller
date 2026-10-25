@@ -109,9 +109,15 @@ struct SRendererAccess : Render::IHyprRenderer {
     using Render::IHyprRenderer::renderWindow;
 };
 
-static void renderHiddenWindow(const PHLWINDOW& window, const PHLMONITOR& monitor) {
+// At `alpha` (the overview's fade): minimized windows fade in and out with
+// it instead of popping up in their slots.
+static void renderHiddenWindow(const PHLWINDOW& window, const PHLMONITOR& monitor, float alpha) {
+    auto&       A     = window->alpha(Desktop::View::WINDOW_ALPHA_LAYOUT);
+    const float SAVED = A->value();
+    A->setValueAndWarp(SAVED * alpha);
     const auto RENDER = &SRendererAccess::renderWindow;
     (g_pHyprRenderer.get()->*RENDER)(window, monitor, Time::steadyNow(), true, Render::RENDER_PASS_ALL, false, true);
+    A->setValueAndWarp(SAVED);
 }
 
 static PHLWINDOW windowOf(const SP<SScrollingWindowData>& data) {
@@ -999,7 +1005,7 @@ void COverview::open() {
                     const auto DATA   = SLOT.data.lock();
                     const auto WINDOW = windowOf(DATA);
                     if (WINDOW && WINDOW->isHidden() && WINDOW->m_isMapped)
-                        renderHiddenWindow(WINDOW, MON);
+                        renderHiddenWindow(WINDOW, MON, overlayAlpha());
                 }
             }
 
