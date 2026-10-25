@@ -134,6 +134,25 @@ PHLMONITOR COverview::monitor() const {
     return WS ? WS->m_monitor.lock() : nullptr;
 }
 
+// While in the overview a window's own border would outline the room its
+// title bar keeps (the bar isn't drawn on thumbnails): fade the border out,
+// and tag the window "hyprscroller-overview" so decorations (hyprflow's
+// title bars) can fade with the zoom instead of popping.
+static void markInOverview(const PHLWINDOW& w, bool on) {
+    auto& R = w->m_ruleApplicator;
+    if (R->m_tagKeeper.applyTag(on ? "+hyprscroller-overview" : "-hyprscroller-overview"))
+        R->propertiesChanged(Desktop::Rule::RULE_PROP_TAG);
+    if (on) {
+        const Config::CGradientValueData CLEAR{CHyprColor(0, 0, 0, 0)};
+        R->activeBorderColor()   = Desktop::Types::COverridableVar<Config::CGradientValueData>(CLEAR, Desktop::Types::PRIORITY_SET_PROP);
+        R->inactiveBorderColor() = Desktop::Types::COverridableVar<Config::CGradientValueData>(CLEAR, Desktop::Types::PRIORITY_SET_PROP);
+    } else {
+        R->activeBorderColor().unset(Desktop::Types::PRIORITY_SET_PROP);
+        R->inactiveBorderColor().unset(Desktop::Types::PRIORITY_SET_PROP);
+    }
+    w->updateDecorationValues();
+}
+
 void COverview::damage() const {
     if (const auto MON = monitor())
         g_pHyprRenderer->damageMonitor(MON);
@@ -539,6 +558,17 @@ void COverview::open() {
     m_session       = makeShared<bool>(true);
     m_restoring.clear();
     m_overlay       = true;
+    for (const auto& r : m_marked) {
+        if (const auto W = r.lock())
+            markInOverview(W, false);
+    }
+    m_marked.clear();
+    for (const auto& w : Desktop::windowState()->windows()) {
+        if (w->m_isMapped && w->m_workspace == WS) {
+            markInOverview(w, true);
+            m_marked.emplace_back(w);
+        }
+    }
     m_fadeStart     = std::chrono::steady_clock::now();
 
     // While open, the overview owns the pointer: show a plain arrow instead of
@@ -894,6 +924,17 @@ void COverview::close(SP<SScrollingWindowData> pick) {
             m_restoring.emplace_back(WINDOW);
         }
     }
+
+    // Ones that aren't zooming back (hidden, floating) are done now; the
+    // others when they're back at full size (draw()).
+    std::erase_if(m_marked, [this](const PHLWINDOWREF& r) {
+        const auto W = r.lock();
+        if (W && std::ranges::any_of(m_restoring, [&](const auto& x) { return x.lock() == W; }) && !W->isHidden())
+            return false;
+        if (W)
+            markInOverview(W, false);
+        return true;
+    });
 
     // Leaving overview mode: this applies the real layout boxes again, animated.
     m_layout->m_scrollingData->recalculate(!g_config.overview_animate->value());
@@ -1432,6 +1473,15 @@ void COverview::draw(eRenderStage stage) {
         WINDOW->m_animatingIn = false;
         return true;
     });
+    if (!m_active)
+        std::erase_if(m_marked, [this](const PHLWINDOWREF& r) {
+            const auto W = r.lock();
+            if (W && std::ranges::any_of(m_restoring, [&](const auto& x) { return x.lock() == W; }))
+                return false;
+            if (W)
+                markInOverview(W, false);
+            return true;
+        });
 
     if (ALPHA <= 0.F) {
         // Fully faded out: keep the hook only until the restore above is done.
