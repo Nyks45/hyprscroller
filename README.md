@@ -105,6 +105,7 @@ All options live under `plugin:hyprscrolling:`, i.e. `plugin = { hyprscrolling =
 | `overview_zoom` | float (0.1–1) | `0.5` | Largest overview scale. It zooms out further when needed so every window fits |
 | `overview_titles` | bool | `true` | Show window titles on the overview thumbnails |
 | `overview_accent` | int (0xAARRGGBB) | `0xff89b4fa` | Colour of the highlight around the hovered/selected window in the overview |
+| `predict_size` | int (0/1) | `1` | Tell new windows their column size up front; 0 lets them open at their own size (for setups that float new windows, e.g. hyprflow's desktop mode) |
 | `peek_width` | int (px) | `0` | Keep this much of the neighbouring columns visible at each side, so off-screen windows stay visible and can be hovered/clicked. Column widths are fractions of the usable width minus the two peek strips |
 | `stretch_to_fill` | bool | `false` | When the columns together are narrower than the screen, stretch them to fill it instead of centring them |
 | `new_window_placement` | string | `column` | Where new windows open: `column` = in their own new column next to the focused one, `stack` = in the focused column, below the focused window |

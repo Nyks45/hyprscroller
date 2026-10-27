@@ -39,6 +39,7 @@ struct SConfig {
     SP<Config::Values::CFloatValue>  overview_zoom;
     SP<Config::Values::CIntValue>    overview_titles;
     SP<Config::Values::CIntValue>    overview_accent;
+    SP<Config::Values::CIntValue>    predict_size;
 };
 
 inline SConfig g_config;

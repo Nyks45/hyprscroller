@@ -57,6 +57,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_config.overview_zoom            = makeShared<Config::Values::CFloatValue>("plugin:hyprscrolling:overview_zoom", "maximum overview zoom (it zooms out further if needed to fit everything)", 0.5);
     g_config.overview_titles          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:overview_titles", "show window titles in the overview", 1);
     g_config.overview_accent          = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:overview_accent", "overview highlight colour, 0xAARRGGBB", 0xff89b4fa);
+    g_config.predict_size             = makeShared<Config::Values::CIntValue>("plugin:hyprscrolling:predict_size",
+                                                                            "tell new windows their column size up front (0: let them pick their own, e.g. when they'll float)", 1);
 
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.fullscreen_on_one_column);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.column_width);
@@ -87,6 +89,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.overview_zoom);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.overview_titles);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_config.overview_accent);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_config.predict_size);
 
     bool success = HyprlandAPI::addTiledAlgo(PHANDLE, "hyprscrolling", &typeid(CScrollingLayout), []() -> UP<Layout::ITiledAlgorithm> {
         return makeUnique<CScrollingLayout>();

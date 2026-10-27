@@ -2149,7 +2149,11 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
 
 std::optional<Vector2D> CScrollingLayout::predictSizeForNewTarget() {
     // Tell new clients their size up front, so they don't map at their own
-    // preferred size and visibly snap into the column right after.
+    // preferred size and visibly snap into the column right after. Not when
+    // they'll float anyway (predict_size 0, e.g. hyprflow's desktop mode):
+    // then they pick their own.
+    if (!g_config.predict_size->value())
+        return std::nullopt;
     const CBox USABLE = usableArea();
     if (USABLE.w <= 0 || USABLE.h <= 0)
         return std::nullopt;
