@@ -5,6 +5,10 @@
 
 #include "globals.hpp"
 #include "Scrolling.hpp"
+#include <hyprland/src/Compositor.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
+#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
     return HYPRLAND_API_VERSION;
@@ -100,5 +104,14 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    // Hyprland exiting (logout) with a fullscreen window: unmapping it later
+    // takes it out of fullscreen through this layout's state, after the
+    // plugin is gone (a crash). Do that now, while it's still loaded.
+    if (g_pCompositor->m_isShuttingDown) {
+        for (const auto& w : Desktop::windowState()->windows()) {
+            if (w->m_isMapped && Fullscreen::controller()->getFullscreenModes(w).internal != Fullscreen::FSMODE_NONE)
+                Fullscreen::controller()->setFullscreenMode(w, Fullscreen::FSMODE_NONE, Fullscreen::FSMODE_NONE);
+        }
+    }
     HyprlandAPI::removeAlgo(PHANDLE, "hyprscrolling");
 }
