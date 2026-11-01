@@ -28,7 +28,7 @@
 #include <hyprland/src/state/WorkspaceState.hpp>
 #include <hyprland/src/desktop/state/GlobalWindowController.hpp>
 #include <hyprland/src/output/Monitor.hpp>
-#include <hyprland/src/desktop/Workspace.hpp>
+#include <hyprland/src/workspace/HLWorkspace.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/managers/fullscreen/handler/FullscreenHandler.hpp>
@@ -71,29 +71,27 @@ static int g_placementOverride = -1;
 // (borderless-fullscreen games and the like). Override-redirect windows are
 // menus/tooltips, never layout targets worth fullscreening.
 static bool opensAtScreenSize(const PHLWINDOW& w) {
-    if (!w->m_isX11 || w->isX11OverrideRedirect())
+    if (!w->backend().isX11() || w->backend().traits().overrideRedirect)
         return false;
 
-    const auto XSURF = w->m_xwaylandSurface.lock();
-    const auto PMON  = w->m_monitor.lock();
-    if (!XSURF || !PMON)
+    const auto PMON = w->m_monitor.lock();
+    if (!PMON)
         return false;
 
     const auto MON    = PMON->logicalBox().size();
     const auto covers = [&MON](double width, double height) { return width >= MON.x - 1 && height >= MON.y - 1; };
 
     // By the time the layout sees the window XWayland has usually configured
-    // it already, so m_geometry alone misses most cases. WM_NORMAL_HINTS keeps
-    // the size the client asked for, and a minimum size can rule out tiling.
-    if (covers(XSURF->m_geometry.w, XSURF->m_geometry.h))
+    // it already. Hyprland 0.57 keeps the X surface private to the window's
+    // backend: its geometry and minimum size (WM_NORMAL_HINTS) come through
+    // the backend, in logical units; the requested size (US/P_SIZE) no longer
+    // does, apps asking for screen size are usually configured to it anyway.
+    const auto GEOM = w->backend().geometry().box;
+    if (covers(GEOM.w, GEOM.h))
         return true;
 
-    if (const auto* HINTS = XSURF->m_sizeHints.get()) {
-        if ((HINTS->flags & (XCB_ICCCM_SIZE_HINT_US_SIZE | XCB_ICCCM_SIZE_HINT_P_SIZE)) && covers(HINTS->width, HINTS->height))
-            return true;
-        if ((HINTS->flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) && covers(HINTS->min_width, HINTS->min_height))
-            return true;
-    }
+    if (const auto MIN = w->backend().geometryHints(Desktop::View::eBackendState::BACKEND_STATE_CURRENT).minSize; MIN && covers(MIN->x, MIN->y))
+        return true;
 
     return false;
 }
@@ -1096,10 +1094,10 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
     // without requesting fullscreen. Don't squeeze those into a column: make
     // them fullscreen. Hyprland settles a window's initial fullscreen state
     // during map, after this call, so apply it once mapping has finished.
-    if (const auto W = target->window(); g_config.fullscreen_screen_sized->value() && W && W->m_firstMap && opensAtScreenSize(W)) {
+    if (const auto W = target->window(); g_config.fullscreen_screen_sized->value() && W && (W->m_state & Desktop::View::WINDOW_STATE_FIRST_MAP) && opensAtScreenSize(W)) {
         g_pEventLoopManager->doLater([WREF = PHLWINDOWREF{W}] {
             const auto WIN = WREF.lock();
-            if (!WIN || !WIN->m_isMapped || Fullscreen::controller()->isFullscreen(WIN))
+            if (!WIN || !WIN->mapped() || Fullscreen::controller()->isFullscreen(WIN))
                 return;
             Fullscreen::controller()->setFullscreenMode(WIN, Fullscreen::FSMODE_FULLSCREEN, Fullscreen::FSMODE_FULLSCREEN);
         });
@@ -2252,7 +2250,7 @@ void CScrollingLayout::moveTargetTo(SP<Layout::ITarget> t, Math::eDirection dir,
         if (*PMONITORFALLBACK && MON) {
             const auto MONINDIR = State::monitorState()->query().relativeTo(MON).inDirection(dir).run();
             if (MONINDIR && MONINDIR != MON && MONINDIR->m_activeWorkspace) {
-                t->assignToSpace(MONINDIR->m_activeWorkspace->m_space, focalPointForDir(t, dir));
+                t->assignToSpace(MONINDIR->m_activeWorkspace->space(), focalPointForDir(t, dir));
                 return;
             }
         }
@@ -2370,11 +2368,6 @@ void CScrollingLayout::moveColToWorkspace(SP<SColumnData> col, const std::string
     if (!col || col->windowDatas.empty())
         return;
 
-    // Resolve workspace
-    const auto WSIDNAME = getWorkspaceIDNameFromString(wsStr);
-    if (WSIDNAME.id == WORKSPACE_INVALID)
-        return;
-
     auto parent = m_parent.lock();
     if (!parent || !parent->space())
         return;
@@ -2384,7 +2377,8 @@ void CScrollingLayout::moveColToWorkspace(SP<SColumnData> col, const std::string
         return;
 
     // Get or create target workspace
-    const auto TARGETWS = hyprscrolling_compat::getOrCreateWorkspace(WSIDNAME.id, WSIDNAME.name, CURRENTWS->m_monitor.lock());
+    // Resolve workspace (invalid strings: none)
+    const auto TARGETWS = hyprscrolling_compat::getOrCreateWorkspace(wsStr, CURRENTWS->m_monitor.lock());
 
     if (!TARGETWS || TARGETWS == CURRENTWS)
         return;
@@ -2443,7 +2437,7 @@ float CScrollingLayout::autoWidthForTarget(SP<Layout::ITarget> target) {
     if (!w)
         return defaultColumnWidth();
 
-    const std::string cls = w->m_class;
+    const std::string cls = w->metadata().appID();
     auto it = m_config.autoWidthRules.find(cls);
     if (it != m_config.autoWidthRules.end())
         return it->second;

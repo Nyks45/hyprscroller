@@ -12,6 +12,10 @@
 #include <hyprland/src/helpers/AnimatedVariable.hpp>
 #include <hyprland/src/render/Texture.hpp>
 
+namespace Render {
+    class CRenderContext;
+}
+
 // niri-style overview: the whole scrolling strip of a workspace zooms out so
 // every column (and every stacked window) is visible in its real arrangement.
 //
@@ -49,7 +53,7 @@ class COverview {
     // while the overview is open, so windows opening/closing stay in place.
     void apply(bool instant = false);
     // Called from the render pass element.
-    void draw(eRenderStage stage);
+    void draw(Render::CRenderContext& ctx, eRenderStage stage);
     // A window is leaving the layout while open. Hyprland then force-reports
     // every window's current (thumbnail) size to its client; undo that.
     void onWindowRemoved();
@@ -186,5 +190,5 @@ class COverview {
     int                                                    menuItemAt(const Vector2D& pos) const;
     void                                                   activateMenuItem(int idx);
     void                                                   moveMenuHover(int delta);
-    void                                                   drawMenu(const PHLMONITOR& mon, float alpha);
+    void                                                   drawMenu(Render::CRenderContext& ctx, const PHLMONITOR& mon, float alpha);
 };

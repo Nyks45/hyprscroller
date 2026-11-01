@@ -7,7 +7,10 @@
 #include "Scrolling.hpp"
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WindowBackend.hpp>
+#include <hyprland/src/desktop/view/window/WindowMetadata.hpp>
+#include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
@@ -112,7 +115,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
     // plugin is gone (a crash). Do that now, while it's still loaded.
     if (g_pCompositor->m_isShuttingDown) {
         for (const auto& w : Desktop::windowState()->windows()) {
-            if (w->m_isMapped && Fullscreen::controller()->getFullscreenModes(w).internal != Fullscreen::FSMODE_NONE)
+            if (w->mapped() && Fullscreen::controller()->getFullscreenModes(w).internal != Fullscreen::FSMODE_NONE)
                 Fullscreen::controller()->setFullscreenMode(w, Fullscreen::FSMODE_NONE, Fullscreen::FSMODE_NONE);
         }
     }
