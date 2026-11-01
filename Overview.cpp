@@ -650,8 +650,25 @@ void COverview::open() {
         m_fullscreenClient   = MODES.client;
         Fullscreen::controller()->setFullscreenMode(FSW, Fullscreen::FSMODE_NONE, Fullscreen::FSMODE_NONE);
         g_pEventLoopManager->doLater([this, ALIVE = WP<bool>{m_alive}] {
-            if (ALIVE.lock())
-                open();
+            if (!ALIVE.lock())
+                return;
+            // A floating window that opened fullscreen (e.g. Remmina's
+            // fullscreen window) has no real size of its own to go back to:
+            // it came out a few pixels big, a speck in the overview, and
+            // stayed that small when another window was picked. Give it a
+            // centred 80% of the work area instead.
+            if (const auto W = m_fullscreenWindow.lock(); W && W->m_isFloating && W->layoutTarget()) {
+                const auto MON = W->m_monitor.lock();
+                const auto SZ  = W->sizeAnimation()->goal();
+                if (MON) {
+                    const CBox WA = MON->logicalBoxMinusReserved();
+                    if (SZ.x < WA.w * 0.4 || SZ.y < WA.h * 0.4) {
+                        const Vector2D NS = (WA.size() * 0.8).round();
+                        W->layoutTarget()->setPositionGlobal(CBox{WA.pos() + (WA.size() - NS) / 2.0, NS}.round());
+                    }
+                }
+            }
+            open();
         });
         return;
     }
