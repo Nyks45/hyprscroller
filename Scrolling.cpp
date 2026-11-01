@@ -33,6 +33,7 @@
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/managers/fullscreen/handler/FullscreenHandler.hpp>
 #include <hyprland/src/xwayland/XSurface.hpp>
+#include <hyprland/src/desktop/view/window/X11Backend.hpp>
 #include <hyprland/src/desktop/state/ViewState.hpp>
 #include <hyprland/src/desktop/state/ViewHitTester.hpp>
 #include <hyprland/protocols/wlr-layer-shell-unstable-v1.hpp>
@@ -70,28 +71,47 @@ static int g_placementOverride = -1;
 // An X11 window that asked to be at least as large as its monitor
 // (borderless-fullscreen games and the like). Override-redirect windows are
 // menus/tooltips, never layout targets worth fullscreening.
+// Hyprland 0.57 keeps a window's X surface private to its X11 backend:
+// reached through an explicit-instantiation member pointer (no layout
+// assumptions), for the client's own size hints.
+namespace {
+    template <typename Tag, typename Tag::type M>
+    struct SXSurfaceAccess {
+        friend typename Tag::type xsurfaceMember(Tag) {
+            return M;
+        }
+    };
+    struct TXSurface {
+        using type = WP<CXWaylandSurface> Desktop::View::CX11Backend::*;
+        friend type xsurfaceMember(TXSurface);
+    };
+    template struct SXSurfaceAccess<TXSurface, &Desktop::View::CX11Backend::m_xwaylandSurface>;
+}
+
 static bool opensAtScreenSize(const PHLWINDOW& w) {
-    if (!w->backend().isX11() || w->backend().traits().overrideRedirect)
+    if (!w->backend().isX11() || w->backend().traits().overrideRedirect || w->backend().type() != Desktop::View::eBackendType::WINDOW_BACKEND_X11)
         return false;
 
-    const auto PMON = w->m_monitor.lock();
-    if (!PMON)
+    const auto XSURF = (static_cast<const Desktop::View::CX11Backend&>(w->backend()).*xsurfaceMember(TXSurface{})).lock();
+    const auto PMON  = w->m_monitor.lock();
+    if (!XSURF || !PMON)
         return false;
 
     const auto MON    = PMON->logicalBox().size();
     const auto covers = [&MON](double width, double height) { return width >= MON.x - 1 && height >= MON.y - 1; };
 
     // By the time the layout sees the window XWayland has usually configured
-    // it already. Hyprland 0.57 keeps the X surface private to the window's
-    // backend: its geometry and minimum size (WM_NORMAL_HINTS) come through
-    // the backend, in logical units; the requested size (US/P_SIZE) no longer
-    // does, apps asking for screen size are usually configured to it anyway.
-    const auto GEOM = w->backend().geometry().box;
-    if (covers(GEOM.w, GEOM.h))
+    // it already, so m_geometry alone misses most cases. WM_NORMAL_HINTS keeps
+    // the size the client asked for, and a minimum size can rule out tiling.
+    if (covers(XSURF->m_geometry.w, XSURF->m_geometry.h))
         return true;
 
-    if (const auto MIN = w->backend().geometryHints(Desktop::View::eBackendState::BACKEND_STATE_CURRENT).minSize; MIN && covers(MIN->x, MIN->y))
-        return true;
+    if (const auto* HINTS = XSURF->m_sizeHints.get()) {
+        if ((HINTS->flags & (XCB_ICCCM_SIZE_HINT_US_SIZE | XCB_ICCCM_SIZE_HINT_P_SIZE)) && covers(HINTS->width, HINTS->height))
+            return true;
+        if ((HINTS->flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) && covers(HINTS->min_width, HINTS->min_height))
+            return true;
+    }
 
     return false;
 }

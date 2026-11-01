@@ -19,6 +19,8 @@
 #include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
 #include <hyprland/src/render/WindowRenderPresentation.hpp>
 #include <hyprland/src/render/Context.hpp>
+#include <hyprland/src/render/decorations/CHyprDropShadowDecoration.hpp>
+#include <hyprland/src/render/decorations/AnimatedDecorationGradient.hpp>
 #include <hyprland/src/input/Keys.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
@@ -169,16 +171,33 @@ static void restoreMinimized(const PHLWINDOW& w) {
     });
 }
 
-// Hide `w`'s shadow while in the overview. Its shadow also covers the room
-// the title bar keeps, which the bar normally hides: on a thumbnail, without
-// the bar, it would show as a dark band above it. (Hyprland 0.57 keeps the
-// shadow colour inside its decoration, so this is the no_shadow property
-// instead of a fade to clear; markInOverview(w, false) gives it back.)
+// Fade `w`'s shadow out. Its shadow also covers the room the title bar
+// keeps, which the bar normally hides: on a thumbnail, without the bar, it
+// would show as a dark band above it. Hyprland 0.57 keeps the shadow's
+// colour fade inside its shadow decoration (private): reached through an
+// explicit-instantiation member pointer (no layout assumptions), then its
+// own public setTarget() fades to clear. markInOverview(w, false) refreshes
+// the decoration, which fades back to its colour.
+namespace {
+    template <typename Tag, typename Tag::type M>
+    struct SShadowAccess {
+        friend typename Tag::type shadowMember(Tag) {
+            return M;
+        }
+    };
+    struct TShadowGradient {
+        using type = CAnimatedDecorationGradient CHyprDropShadowDecoration::*;
+        friend type shadowMember(TShadowGradient);
+    };
+    template struct SShadowAccess<TShadowGradient, &CHyprDropShadowDecoration::m_gradient>;
+}
+
 static void fadeShadowOut(const PHLWINDOW& w) {
-    auto& NS = w->m_ruleApplicator->noShadow();
-    if (NS.valueOrDefault())
+    const auto D = w->presentation().decoration(DECORATION_SHADOW);
+    if (!D || D->getDisplayName() != "Drop Shadow") // Hyprland's own, not a plugin's
         return;
-    NS.set(true, Desktop::Types::PRIORITY_SET_PROP); // read when the shadow draws
+    auto& G = static_cast<CHyprDropShadowDecoration*>(D.get())->*shadowMember(TShadowGradient{});
+    G.setTarget(Config::CGradientValueData{CHyprColor(0, 0, 0, 0)}); // no-op when already clear
 }
 
 // While in the overview a window's own border would outline the room its
@@ -196,9 +215,8 @@ static void markInOverview(const PHLWINDOW& w, bool on) {
     } else {
         R->activeBorderColor().unset(Desktop::Types::PRIORITY_SET_PROP);
         R->inactiveBorderColor().unset(Desktop::Types::PRIORITY_SET_PROP);
-        R->noShadow().unset(Desktop::Types::PRIORITY_SET_PROP);
     }
-    // Back on: border and shadow return (the border fades to its colour).
+    // Back on: border and shadow fade back to their colours.
     w->presentation().refreshValues();
     if (on)
         fadeShadowOut(w);
