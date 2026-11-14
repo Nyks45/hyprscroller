@@ -929,6 +929,10 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
                 if (!WDATA)
                     break;
 
+                if (auto col = WDATA->column.lock())
+                    col->lastFocusedWindow = WDATA;
+                pushFocusHistory(t);
+
                 // The overview positions windows itself (and focuses the
                 // dragged one); don't sync zen or scroll underneath it. Also
                 // skipped for focus changes that must not move the view.
@@ -1029,12 +1033,17 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
             if (pointerBlocked(PMONITOR, cursor))
                 return;
 
+            Desktop::CViewHitTester hit{*Desktop::viewState()};
+            const auto UNDER = hit.windowAt(cursor, Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS | Desktop::View::ALLOW_FLOATING);
+
             for (auto& wt : parent->space()->targets()) {
                 auto t = wt.lock();
                 if (!t || !t->window())
                     continue;
 
                 auto PWIN = t->window();
+                if (PWIN->isHidden() || (UNDER && UNDER != PWIN))
+                    continue;
                 CBox box = {PWIN->positionAnimation()->value().x, PWIN->positionAnimation()->value().y, PWIN->sizeAnimation()->value().x, PWIN->sizeAnimation()->value().y};
                 if (cursor.x >= box.x && cursor.x <= box.x + box.w &&
                     cursor.y >= box.y && cursor.y <= box.y + box.h) {
@@ -1460,10 +1469,20 @@ SP<SScrollingWindowData> CScrollingLayout::findBestNeighbor(SP<SScrollingWindowD
     if (!pCurrent || !pTargetCol || pTargetCol->windowDatas.empty())
         return nullptr;
 
+    if (pTargetCol->collapsed) {
+        auto lastFocused = pTargetCol->lastFocusedWindow.lock();
+        if (lastFocused && !lastFocused->minimized() &&
+            std::ranges::find(pTargetCol->windowDatas, lastFocused) != pTargetCol->windowDatas.end())
+            return lastFocused;
+        return pTargetCol->firstShown();
+    }
+
     const double                          currentTop    = pCurrent->layoutBox.y;
     const double                          currentBottom = pCurrent->layoutBox.y + pCurrent->layoutBox.h;
     std::vector<SP<SScrollingWindowData>> overlappingWindows;
     for (const auto& candidate : pTargetCol->windowDatas) {
+        if (candidate->minimized())
+            continue;
         const double candidateTop    = candidate->layoutBox.y;
         const double candidateBottom = candidate->layoutBox.y + candidate->layoutBox.h;
         const bool   overlaps        = (candidateTop < currentBottom) && (candidateBottom > currentTop);
@@ -1474,7 +1493,7 @@ SP<SScrollingWindowData> CScrollingLayout::findBestNeighbor(SP<SScrollingWindowD
     if (!overlappingWindows.empty()) {
         auto lastFocused = pTargetCol->lastFocusedWindow.lock();
 
-        if (lastFocused) {
+        if (lastFocused && !lastFocused->minimized()) {
             auto it = std::ranges::find(overlappingWindows, lastFocused);
             if (it != overlappingWindows.end())
                 return lastFocused;
@@ -1558,7 +1577,8 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         const auto ATCENTER = m_scrollingData->atCenter();
         m_suppressFollow    = true;
         CScopeGuard restore([this] { m_suppressFollow = false; });
-        focusTargetUpdate(ATCENTER ? (*ATCENTER->windowDatas.begin())->target.lock() : nullptr);
+        const auto SHOWN = ATCENTER ? ATCENTER->firstShown() : nullptr;
+        focusTargetUpdate(SHOWN ? SHOWN->target.lock() : nullptr);
     } else if (ARGS[0] == "colresize") {
         auto WDATA = focusedWindowData();
 
@@ -1643,7 +1663,7 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
         if (!COL)
             return {};
 
-        if (COL->windowDatas.size() <= 1)
+        if (COL->windowDatas.size() <= 1 && !g_config.column_scroll->value())
             return {};
 
         // Resize the window to targetSize, scaling all other windows in the column proportionally.
@@ -1784,10 +1804,10 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                     foundAt = i;
                 }
 
-                if (m_scrollingData->columns[i]->pinned == PIN_NONE) {
+                if (m_scrollingData->columns[i]->pinned == PIN_NONE && !m_scrollingData->columns[i]->minimized()) {
                     size_t remaining = 0;
-                    for (size_t j = i; j < m_scrollingData->columns.size(); ++j) {
-                        if (m_scrollingData->columns[j]->pinned == PIN_NONE)
+                    for (size_t j = foundAt; j < m_scrollingData->columns.size(); ++j) {
+                        if (m_scrollingData->columns[j]->pinned == PIN_NONE && !m_scrollingData->columns[j]->minimized())
                             remaining++;
                     }
                     m_scrollingData->columns[i]->columnWidth = remaining > 0 ? 1.F / (float)remaining : 1.F;
@@ -1818,10 +1838,10 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                     foundAt = i;
                 }
 
-                if (m_scrollingData->columns[i]->pinned == PIN_NONE) {
+                if (m_scrollingData->columns[i]->pinned == PIN_NONE && !m_scrollingData->columns[i]->minimized()) {
                     size_t scrollableInRange = 0;
                     for (size_t j = 0; j <= (size_t)foundAt; ++j) {
-                        if (m_scrollingData->columns[j]->pinned == PIN_NONE)
+                        if (m_scrollingData->columns[j]->pinned == PIN_NONE && !m_scrollingData->columns[j]->minimized())
                             scrollableInRange++;
                     }
                     m_scrollingData->columns[i]->columnWidth = scrollableInRange > 0 ? 1.F / (float)scrollableInRange : 1.F;
@@ -1841,6 +1861,9 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             size_t                       foundAt = 0;
             std::vector<SP<SColumnData>> visible;
             for (size_t i = 0; i < m_scrollingData->columns.size(); ++i) {
+                if (m_scrollingData->columns[i]->pinned != PIN_NONE || m_scrollingData->columns[i]->minimized())
+                    continue;
+
                 if (!begun && !m_scrollingData->visible(m_scrollingData->columns[i]))
                     continue;
 
@@ -1921,7 +1944,14 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                             Pointer::mgr()->warpTo(w->middle());
                         break;
                     }
-                    PREV = m_scrollingData->columns.back();
+                    auto it = std::ranges::find_if(m_scrollingData->columns.rbegin(), m_scrollingData->columns.rend(),
+                                                   [](const auto& c) { return c->pinned == PIN_NONE && !c->minimized(); });
+                    if (it == m_scrollingData->columns.rend())
+                        it = std::ranges::find_if(m_scrollingData->columns.rbegin(), m_scrollingData->columns.rend(),
+                                                  [](const auto& c) { return !c->minimized(); });
+                    if (it == m_scrollingData->columns.rend())
+                        break;
+                    PREV = *it;
                 }
 
                 auto pTargetWindowData = findBestNeighbor(WDATA, PREV);
@@ -1948,7 +1978,13 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
                             Pointer::mgr()->warpTo(w->middle());
                         break;
                     }
-                    NEXT = m_scrollingData->columns.front();
+                    auto it = std::ranges::find_if(m_scrollingData->columns,
+                                                   [](const auto& c) { return c->pinned == PIN_NONE && !c->minimized(); });
+                    if (it == m_scrollingData->columns.end())
+                        it = std::ranges::find_if(m_scrollingData->columns, [](const auto& c) { return !c->minimized(); });
+                    if (it == m_scrollingData->columns.end())
+                        break;
+                    NEXT = *it;
                 }
 
                 auto pTargetWindowData = findBestNeighbor(WDATA, NEXT);
@@ -1972,6 +2008,8 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             return {};
 
         auto COL = WDATA->column.lock();
+        if (!COL || COL->windowDatas.size() <= 1)
+            return {};
         auto idx = m_scrollingData->idx(COL);
         auto col = idx == -1 ? m_scrollingData->add() : m_scrollingData->add(idx);
 
@@ -1983,6 +2021,8 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
 
         col->add(WDATA);
         col->columnWidth = autoWidthForTarget(WDATA->target.lock());
+        syncZenColumn(col);
+        m_scrollingData->centerOrFitCol(col);
 
         m_scrollingData->recalculate();
     } else if (ARGS[0] == "swapcol") {
@@ -2142,9 +2182,12 @@ Config::ErrorResult CScrollingLayout::layoutMsg(const std::string_view& sv) {
             m_focusHistoryIdx += BACK ? -1 : 1;
             const auto TARGET = m_focusHistory[m_focusHistoryIdx].lock();
             const auto WDATA  = TARGET ? dataFor(TARGET) : nullptr;
-            if (!WDATA)
+            if (!WDATA || WDATA->minimized())
                 continue;
 
+            if (auto col = WDATA->column.lock())
+                col->lastFocusedWindow = WDATA;
+            syncZenColumn(WDATA->column.lock());
             m_scrollingData->centerOrFitCol(WDATA->column.lock());
             m_scrollingData->recalculate();
             Desktop::focusState()->fullWindowFocus(TARGET->window(), Desktop::FOCUS_REASON_OTHER);
@@ -2498,14 +2541,18 @@ void CScrollingLayout::updateHoverTimer() {
 void CScrollingLayout::onHoverTimer() {
     const auto TARGET = m_hoverTarget.lock();
     m_hoverTarget.reset();
-    if (!TARGET)
+    if (!TARGET || m_overview->active())
         return;
 
     // Still over that window, and not over the shell / edge margins?
     const Vector2D CURSOR   = g_pInputManager->getMouseCoordsInternal();
     const auto     PMONITOR = hyprscrolling_compat::monitorFromCursor();
     const auto     PWIN     = TARGET->window();
-    if (!PMONITOR || !PWIN || pointerBlocked(PMONITOR, CURSOR))
+    if (!PMONITOR || !PWIN || PWIN->isHidden() || pointerBlocked(PMONITOR, CURSOR))
+        return;
+    Desktop::CViewHitTester hit{*Desktop::viewState()};
+    const auto UNDER = hit.windowAt(CURSOR, Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS | Desktop::View::ALLOW_FLOATING);
+    if (UNDER && UNDER != PWIN)
         return;
     if (!CBox{PWIN->positionAnimation()->value(), PWIN->sizeAnimation()->value()}.containsPoint(CURSOR))
         return;

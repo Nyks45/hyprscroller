@@ -133,17 +133,32 @@ static PHLWINDOW windowOf(const SP<SScrollingWindowData>& data) {
     return TARGET ? TARGET->window() : nullptr;
 }
 
+static void markInOverview(const PHLWINDOW& w, bool on);
+
 COverview::COverview(CScrollingLayout* layout) : m_layout(layout) {
     ;
 }
 
 COverview::~COverview() {
+    m_renderListener.reset();
+    stopInput();
+    m_progress.reset();
     // Timers outliving this (and the plugin, when it's unloaded) would call
     // into freed code.
     for (const auto& t : {m_altTimer, m_showTimer}) {
         if (t)
             g_pEventLoopManager->removeTimer(t);
     }
+    for (const auto& r : m_restoring) {
+        if (const auto W = r.lock())
+            W->presentation().setAnimatingIn(false);
+    }
+    m_restoring.clear();
+    for (const auto& r : m_marked) {
+        if (const auto W = r.lock())
+            markInOverview(W, false);
+    }
+    m_marked.clear();
 }
 
 PHLMONITOR COverview::monitor() const {
@@ -223,8 +238,10 @@ static void markInOverview(const PHLWINDOW& w, bool on) {
 }
 
 void COverview::damage() const {
-    if (const auto MON = monitor())
+    if (const auto MON = monitor()) {
         g_pHyprRenderer->damageMonitor(MON);
+        MON->scheduleFrame();
+    }
 }
 
 float COverview::overlayAlpha() const {
@@ -1188,6 +1205,36 @@ void COverview::moveSelection(Math::eDirection dir) {
     const auto               COL = SLOT->column.lock();
     SP<SScrollingWindowData> next;
 
+    if (!COL || COL == m_floatingColumn || m_columnSlots.empty()) {
+        const Vector2D CUR       = SLOT->box.middle();
+        double         bestScore = INFINITY;
+        for (const auto& S : m_slots) {
+            const auto D = S.data.lock();
+            if (!D || D == CURRENT)
+                continue;
+            const Vector2D M  = S.box.middle();
+            const double   DX = M.x - CUR.x;
+            const double   DY = M.y - CUR.y;
+            double         primary = 0.0, ortho = 0.0;
+            switch (dir) {
+                case Math::DIRECTION_LEFT:  primary = -DX; ortho = std::abs(DY); break;
+                case Math::DIRECTION_RIGHT: primary =  DX; ortho = std::abs(DY); break;
+                case Math::DIRECTION_UP:    primary = -DY; ortho = std::abs(DX); break;
+                case Math::DIRECTION_DOWN:  primary =  DY; ortho = std::abs(DX); break;
+                default: continue;
+            }
+            if (primary <= 1.0)
+                continue;
+            const double SCORE = primary + 2.5 * ortho;
+            if (SCORE < bestScore) {
+                bestScore = SCORE;
+                next      = D;
+            }
+        }
+        select(next);
+        return;
+    }
+
     if (dir == Math::DIRECTION_UP)
         next = COL ? COL->prev(CURRENT) : nullptr;
     else if (dir == Math::DIRECTION_DOWN)
@@ -1712,6 +1759,12 @@ void COverview::draw(Render::CRenderContext& ctx, eRenderStage stage) {
     if (ALPHA <= 0.F) {
         // Fully faded out: keep the hook only until the restore above is done.
         if (!m_active && m_restoring.empty()) {
+            for (const auto& r : m_marked) {
+                if (const auto W = r.lock())
+                    markInOverview(W, false);
+            }
+            m_marked.clear();
+            m_progress.reset();
             m_overlay = false;
             m_textCache.clear();
             m_renderListener.reset();
