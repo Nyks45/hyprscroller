@@ -104,8 +104,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("[hs] Algorithm registration failed");
     }
 
-    HyprlandAPI::addNotification(PHANDLE, "[hyprscrolling] Initialized successfully!", CHyprColor{0.2, 1.0, 0.2, 1.0}, 3000);
-
     return {"hyprscrolling", "A scrolling (column-based) layout for Hyprland", "Nyks45, based on hyprscrolling by Vaxry", "2.1"};
 }
 
