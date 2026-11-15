@@ -1759,11 +1759,7 @@ void COverview::draw(Render::CRenderContext& ctx, eRenderStage stage) {
     if (ALPHA <= 0.F) {
         // Fully faded out: keep the hook only until the restore above is done.
         if (!m_active && m_restoring.empty()) {
-            for (const auto& r : m_marked) {
-                if (const auto W = r.lock())
-                    markInOverview(W, false);
-            }
-            m_marked.clear();
+            // (m_marked is empty here: the erase_if above unmarked them all)
             m_progress.reset();
             m_overlay = false;
             m_textCache.clear();

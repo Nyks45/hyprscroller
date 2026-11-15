@@ -931,7 +931,9 @@ void CScrollingLayout::newTarget(SP<Layout::ITarget> target) {
 
                 if (auto col = WDATA->column.lock())
                     col->lastFocusedWindow = WDATA;
-                pushFocusHistory(t);
+                // Back/forward history: windows chosen, not every window the pointer crosses
+                if (!(reason & Desktop::FOCUS_REASON_FFM))
+                    pushFocusHistory(t);
 
                 // The overview positions windows itself (and focuses the
                 // dragged one); don't sync zen or scroll underneath it. Also
@@ -1468,14 +1470,6 @@ void CScrollingLayout::focusTargetUpdate(SP<Layout::ITarget> target) {
 SP<SScrollingWindowData> CScrollingLayout::findBestNeighbor(SP<SScrollingWindowData> pCurrent, SP<SColumnData> pTargetCol) {
     if (!pCurrent || !pTargetCol || pTargetCol->windowDatas.empty())
         return nullptr;
-
-    if (pTargetCol->collapsed) {
-        auto lastFocused = pTargetCol->lastFocusedWindow.lock();
-        if (lastFocused && !lastFocused->minimized() &&
-            std::ranges::find(pTargetCol->windowDatas, lastFocused) != pTargetCol->windowDatas.end())
-            return lastFocused;
-        return pTargetCol->firstShown();
-    }
 
     const double                          currentTop    = pCurrent->layoutBox.y;
     const double                          currentBottom = pCurrent->layoutBox.y + pCurrent->layoutBox.h;
