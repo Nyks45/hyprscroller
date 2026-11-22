@@ -22,6 +22,7 @@
 #include <hyprland/src/render/Context.hpp>
 #include <hyprland/src/render/decorations/CHyprDropShadowDecoration.hpp>
 #include <hyprland/src/render/decorations/AnimatedDecorationGradient.hpp>
+#include <hyprland/src/render/decorations/DecorationPositioner.hpp>
 #include <hyprland/src/keybinds/Bind.hpp>
 #include <hyprland/src/keybinds/InputState.hpp>
 #include <hyprland/src/keybinds/Manager.hpp>
@@ -195,6 +196,7 @@ static void restoreWindowToGoal(const PHLWINDOW& w) {
     w->sizeAnimation()->value()     = w->sizeAnimation()->goal();
     w->presentation().setAnimatingIn(false);
     w->presentation().updateDecorations();
+    g_pDecorationPositioner->onWindowUpdate(w);
 }
 
 COverview::COverview(CScrollingLayout* layout) : m_layout(layout) {
@@ -489,6 +491,7 @@ void COverview::placeWindow(const PHLWINDOW& window, const CBox& box) {
     window->sizeAnimation()->value()     = box.size();
     window->presentation().setAnimatingIn(true);
     window->presentation().updateDecorations();
+    g_pDecorationPositioner->onWindowUpdate(window);
 }
 
 void COverview::finishClosing() {
@@ -1316,23 +1319,19 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     // to the fullscreen window (or cancelling) keeps it fullscreen untouched.
     if (const auto FSW = m_fullscreenWindow.lock(); FSW && FSW->mapped() && PICK_WIN && PICK_WIN != FSW) {
         Fullscreen::controller()->setFullscreenMode(FSW, Fullscreen::FSMODE_NONE, Fullscreen::FSMODE_NONE);
-        g_pEventLoopManager->doLater([FSWREF = PHLWINDOWREF{FSW}, ALIVE = WP<bool>{m_alive}] {
-            if (!ALIVE.lock())
-                return;
-            // A floating window that opened fullscreen (e.g. Remmina) has no
-            // useful un-fullscreen size of its own: center at 80% of work area.
-            if (const auto W = FSWREF.lock(); W && W->mapped() && W->isFloating() && W->layoutTarget()) {
-                const auto MON = W->m_monitor.lock();
-                const auto SZ  = W->sizeAnimation()->goal();
-                if (MON) {
-                    const CBox WA = MON->logicalBoxMinusReserved();
-                    if (SZ.x < WA.w * 0.4 || SZ.y < WA.h * 0.4) {
-                        const Vector2D NS = (WA.size() * 0.8).round();
-                        W->layoutTarget()->setPositionGlobal(CBox{WA.pos() + (WA.size() - NS) / 2.0, NS}.round());
-                    }
+        // A floating window that opened fullscreen (e.g. Remmina) has no
+        // useful un-fullscreen size of its own: center at 80% of work area.
+        if (FSW->isFloating() && FSW->layoutTarget()) {
+            const auto MON = FSW->m_monitor.lock();
+            const auto SZ  = FSW->sizeAnimation()->goal();
+            if (MON) {
+                const CBox WA = MON->logicalBoxMinusReserved();
+                if (SZ.x < WA.w * 0.4 || SZ.y < WA.h * 0.4) {
+                    const Vector2D NS = (WA.size() * 0.8).round();
+                    FSW->layoutTarget()->setPositionGlobal(CBox{WA.pos() + (WA.size() - NS) / 2.0, NS}.round());
                 }
             }
-        });
+        }
     }
     m_fullscreenWindow.reset();
 
@@ -1379,12 +1378,12 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     }
     m_progress->setCallbackOnEnd([](auto) {}, false);
     m_progress->setValueAndWarp(0.F);
-    m_closing = true;
+    m_closing   = true;
+    *m_progress = 1.F;
     m_progress->setCallbackOnEnd([this, ALIVE = WP<bool>{m_alive}](auto) {
         if (ALIVE.lock() && m_closing)
             finishClosing();
-    }, false);
-    *m_progress = 1.F;
+    }, true);
     damage();
 }
 
