@@ -12,8 +12,6 @@
 #include <hyprland/src/SharedDefs.hpp>
 #include <hyprland/src/helpers/AnimatedVariable.hpp>
 #include <hyprland/src/render/Texture.hpp>
-#include <hyprland/src/render/pass/Pass.hpp>
-#include <hyprutils/utils/ScopeGuard.hpp>
 
 namespace Desktop::View {
     class CWindow;
@@ -26,9 +24,10 @@ namespace Render {
 // niri-style overview: the whole scrolling strip of a workspace zooms out so
 // every column (and every stacked window) is visible in its real arrangement.
 //
-// The zoom is purely visual: windows keep their real position and size (so
-// clients never receive configures or reflow). Normal window passes are
-// discarded while the overview draws their surfaces scaled via renderModif.
+// The zoom is purely visual: windows keep their real goal position and size
+// (GEOMETRIC_GOAL, so clients never receive configures or reflow) while
+// positionAnimation()->value() and sizeAnimation()->value() (GEOMETRIC_CURRENT)
+// drive Hyprland's native renderWindow pass cleanly between full size and slots.
 //
 // While open, the overview owns pointer and keyboard input: click/Enter to
 // pick, arrows/wheel to move the selection, drag to rearrange, right-click
@@ -162,13 +161,8 @@ class COverview {
     };
     PHLANIMVAR<float>                                          m_progress;
     std::unordered_map<const Desktop::View::CWindow*, SAnim>   m_anims;
-    std::unordered_map<const Desktop::View::CWindow*, CBox>    m_visualBoxes;
     bool                                                       m_closing = false;
     std::vector<SCloseEntry>                                   m_closeEntries;
-
-    Render::CRenderPass                                        m_discardPass;
-    UP<Hyprutils::Utils::CScopeGuard>                          m_discardGuard;
-    bool                                                       m_renderingOverview = false;
 
     std::unordered_set<uint32_t>                               m_consumedKeys;
 
@@ -185,18 +179,14 @@ class COverview {
     const SSlot*                                               slotFor(const SP<SScrollingWindowData>& data) const;
     float                                                      overlayAlpha() const;
     void                                                       damage() const;
+    void                                                       placeWindow(const PHLWINDOW& window, const CBox& box);
     void                                                       select(const SP<SScrollingWindowData>& data);
     void                                                       moveSelection(Math::eDirection dir);
     void                                                       drop(const Vector2D& pos);
     SP<Render::ITexture>                                       text(const std::string& str, int maxWidthPx);
     void                                                       stopInput();
     void                                                       step();
-    void                                                       updateVisualBoxes();
     void                                                       finishClosing();
-    bool                                                       isManagedWindow(const PHLWINDOW& window) const;
-    CBox                                                       visualBoxFor(const PHLWINDOW& window) const;
-    void                                                       queueWindowPreview(Render::CRenderContext& ctx, const PHLWINDOW& window, const PHLMONITOR& mon, const CBox& box,
-                                                                                  float fadeAlpha) const;
 
     void                                                   openMenu(const SP<SScrollingWindowData>& data, const Vector2D& pos);
     void                                                   setMenuItems(std::vector<SMenuItem>&& items);

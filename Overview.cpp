@@ -20,6 +20,8 @@
 #include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
 #include <hyprland/src/render/WindowRenderPresentation.hpp>
 #include <hyprland/src/render/Context.hpp>
+#include <hyprland/src/render/decorations/CHyprDropShadowDecoration.hpp>
+#include <hyprland/src/render/decorations/AnimatedDecorationGradient.hpp>
 #include <hyprland/src/keybinds/Bind.hpp>
 #include <hyprland/src/keybinds/InputState.hpp>
 #include <hyprland/src/keybinds/Manager.hpp>
@@ -33,11 +35,7 @@
 #include <hyprland/src/output/Monitor.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>
-#include <hyprland/src/render/pass/BackdropScopePassElement.hpp>
 #include <hyprland/src/render/pass/PassElement.hpp>
-#include <hyprland/src/render/pass/RectPassElement.hpp>
-#include <hyprland/src/render/pass/RendererHintsPassElement.hpp>
-#include <hyprland/src/render/pass/SurfacePassElement.hpp>
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 #include <hyprland/src/devices/IKeyboard.hpp>
@@ -130,12 +128,33 @@ static CBox realWindowBox(const PHLWINDOW& w) {
     return CBox{w->positionAnimation()->value(), w->sizeAnimation()->value()};
 }
 
+static CBox realGoalBox(const PHLWINDOW& w) {
+    return CBox{w->positionAnimation()->goal(), w->sizeAnimation()->goal()};
+}
+
 static CBox fitPreviewBox(const CBox& target, const Vector2D& realSize) {
     if (realSize.x < 1.0 || realSize.y < 1.0 || target.w < 1.0 || target.h < 1.0)
         return target;
     const double   S  = std::min(target.w / realSize.x, target.h / realSize.y);
     const Vector2D SZ = realSize * S;
     return CBox{target.middle() - SZ / 2.0, SZ};
+}
+
+// IHyprRenderer::renderWindow is protected; its "standalone" mode is the only
+// way to draw a hidden window. Reach it through a derived class's using-declaration.
+struct SRendererAccess : Render::IHyprRenderer {
+    using Render::IHyprRenderer::renderWindow;
+};
+
+// At `alpha` (the overview's fade): minimized windows fade in and out with
+// it instead of popping up in their slots.
+static void renderHiddenWindow(Render::CRenderContext& ctx, const PHLWINDOW& window, const PHLMONITOR& monitor, float alpha) {
+    auto&       A     = window->presentation().alpha(Desktop::View::WINDOW_ALPHA_LAYOUT);
+    const float SAVED = A->value();
+    A->setValueAndWarp(SAVED * alpha);
+    const auto RENDER = &SRendererAccess::renderWindow;
+    (g_pHyprRenderer.get()->*RENDER)(ctx, window, monitor, window->presentation().renderPresentation(), Time::steadyNow(), true, Render::RENDER_PASS_ALL, false, true);
+    A->setValueAndWarp(SAVED);
 }
 
 // Mark release binds bound to any currently held modifier (e.g. SUPER + SUPER_L)
@@ -167,13 +186,22 @@ static PHLWINDOW windowOf(const SP<SScrollingWindowData>& data) {
 
 static void markInOverview(const PHLWINDOW& w, bool on);
 
+static void restoreWindowToGoal(const PHLWINDOW& w) {
+    if (!w)
+        return;
+    w->positionAnimation()->warp(false, true);
+    w->sizeAnimation()->warp(false, true);
+    w->positionAnimation()->value() = w->positionAnimation()->goal();
+    w->sizeAnimation()->value()     = w->sizeAnimation()->goal();
+    w->presentation().setAnimatingIn(false);
+    w->presentation().updateDecorations();
+}
+
 COverview::COverview(CScrollingLayout* layout) : m_layout(layout) {
     ;
 }
 
 COverview::~COverview() {
-    m_discardGuard.reset();
-    m_discardPass.clear();
     m_renderListener.reset();
     m_consumedKeys.clear();
     m_keyListener.reset();
@@ -185,12 +213,17 @@ COverview::~COverview() {
         if (t)
             g_pEventLoopManager->removeTimer(t);
     }
+    for (const auto& e : m_closeEntries) {
+        if (const auto W = e.window.lock())
+            restoreWindowToGoal(W);
+    }
     m_closeEntries.clear();
-    m_visualBoxes.clear();
     m_anims.clear();
     for (const auto& r : m_marked) {
-        if (const auto W = r.lock())
+        if (const auto W = r.lock()) {
+            restoreWindowToGoal(W);
             markInOverview(W, false);
+        }
     }
     m_marked.clear();
 }
@@ -220,12 +253,58 @@ static void restoreMinimized(const PHLWINDOW& w) {
     });
 }
 
-// Tag the window "hyprscroller-overview" so hyprflow hides its title bar,
-// restores rounded top corners, and ignores clicks on its hidden real box.
+// Fade `w`'s shadow out. Its shadow also covers the room the title bar
+// keeps, which the bar normally hides: on a thumbnail, without the bar, it
+// would show as a dark band above it. Hyprland 0.57 keeps the shadow's
+// colour fade inside its shadow decoration (private): reached through an
+// explicit-instantiation member pointer (no layout assumptions), then its
+// own public setTarget() fades to clear. markInOverview(w, false) refreshes
+// the decoration, which fades back to its colour.
+namespace {
+    template <typename Tag, typename Tag::type M>
+    struct SShadowAccess {
+        friend typename Tag::type shadowMember(Tag) {
+            return M;
+        }
+    };
+    struct TShadowGradient {
+        using type = CAnimatedDecorationGradient CHyprDropShadowDecoration::*;
+        friend type shadowMember(TShadowGradient);
+    };
+    template struct SShadowAccess<TShadowGradient, &CHyprDropShadowDecoration::m_gradient>;
+}
+
+static void fadeShadowOut(const PHLWINDOW& w) {
+    const auto D = w->presentation().decoration(DECORATION_SHADOW);
+    if (!D || D->getDisplayName() != "Drop Shadow") // Hyprland's own, not a plugin's
+        return;
+    auto& G = static_cast<CHyprDropShadowDecoration*>(D.get())->*shadowMember(TShadowGradient{});
+    G.setTarget(Config::CGradientValueData{CHyprColor(0, 0, 0, 0)}); // no-op when already clear
+}
+
+// Tag the window "hyprscroller-overview" so hyprflow fades its title bar and
+// restores rounded top corners, clear border/shadow so reserved bar space
+// doesn't show an empty band, and ensure non-fullscreen windows are drawn if
+// the workspace has a fullscreen window.
 static void markInOverview(const PHLWINDOW& w, bool on) {
     auto& R = w->m_ruleApplicator;
     if (R->m_tagKeeper.applyTag(on ? "+hyprscroller-overview" : "-hyprscroller-overview"))
         R->propertiesChanged(Desktop::Rule::RULE_PROP_TAG);
+    if (on) {
+        const Config::CGradientValueData CLEAR{CHyprColor(0, 0, 0, 0)};
+        R->activeBorderColor()   = Desktop::Types::COverridableVar<Config::CGradientValueData>(CLEAR, Desktop::Types::PRIORITY_SET_PROP);
+        R->inactiveBorderColor() = Desktop::Types::COverridableVar<Config::CGradientValueData>(CLEAR, Desktop::Types::PRIORITY_SET_PROP);
+        if (const auto& A = w->presentation().alpha(Desktop::View::WINDOW_ALPHA_FULLSCREEN))
+            A->setValueAndWarp(1.F);
+    } else {
+        R->activeBorderColor().unset(Desktop::Types::PRIORITY_SET_PROP);
+        R->inactiveBorderColor().unset(Desktop::Types::PRIORITY_SET_PROP);
+        if (const auto& A = w->presentation().alpha(Desktop::View::WINDOW_ALPHA_FULLSCREEN))
+            A->setValueAndWarp(w->isBlockedByFullscreen() ? 0.F : 1.F);
+    }
+    w->presentation().refreshValues();
+    if (on)
+        fadeShadowOut(w);
 }
 
 void COverview::damage() const {
@@ -334,6 +413,21 @@ void COverview::computeSlots() {
         cols.emplace_back(std::move(CL));
     }
 
+    if (!m_floating.empty() && contentH > 0) {
+        double maxFloatW = 0;
+        double sumFloatH = 0;
+        for (const auto& F : m_floating) {
+            maxFloatW = std::max(maxFloatW, std::max(1.0, F->layoutBox.w));
+            sumFloatH += std::max(1.0, F->layoutBox.h);
+        }
+        const double  FLOAT_COL_W = std::clamp(maxFloatW, USABLE.w * 0.25, USABLE.w * 0.45);
+        SColumnLayout FL{.column = m_floatingColumn, .x = contentW, .w = FLOAT_COL_W, .heights = {}};
+        for (const auto& F : m_floating)
+            FL.heights.push_back((std::max(1.0, F->layoutBox.h) / sumFloatH) * contentH);
+        contentW += FL.w;
+        cols.emplace_back(std::move(FL));
+    }
+
     if (contentW <= 0 || contentH <= 0)
         return;
 
@@ -344,12 +438,18 @@ void COverview::computeSlots() {
     const Vector2D ORIGIN = WA.pos() + (WA.size() - Vector2D{contentW, contentH} * S) / 2.0;
 
     for (const auto& CL : cols) {
-        m_columnSlots.push_back({.column = CL.column, .box = CBox{ORIGIN.x + CL.x * S, ORIGIN.y, CL.w * S, contentH * S}});
+        const bool IS_FLOAT = CL.column == m_floatingColumn;
+        if (!IS_FLOAT)
+            m_columnSlots.push_back({.column = CL.column, .box = CBox{ORIGIN.x + CL.x * S, ORIGIN.y, CL.w * S, contentH * S}});
 
-        double y = 0;
-        for (size_t i = 0; i < CL.column->windowDatas.size(); ++i) {
-            CBox box = CBox{ORIGIN.x + CL.x * S, ORIGIN.y + y * S, CL.w * S, CL.heights[i] * S}.expand(-OV_GAP / 2.0);
-            m_slots.push_back({.data = CL.column->windowDatas[i], .column = CL.column, .box = box.round()});
+        const auto& WLIST = IS_FLOAT ? m_floating : CL.column->windowDatas;
+        double      y     = 0;
+        for (size_t i = 0; i < WLIST.size(); ++i) {
+            const auto& WDATA = WLIST[i];
+            const auto  WIN   = windowOf(WDATA);
+            const CBox  RAW   = CBox{ORIGIN.x + CL.x * S, ORIGIN.y + y * S, CL.w * S, CL.heights[i] * S}.expand(-OV_GAP / 2.0);
+            const CBox  BOX   = WIN ? fitPreviewBox(RAW, realGoalBox(WIN).size()).round() : RAW.copy().round();
+            m_slots.push_back({.data = WDATA, .column = CL.column, .box = BOX});
             y += CL.heights[i];
         }
     }
@@ -362,7 +462,7 @@ const COverview::SSlot* COverview::slotAt(const Vector2D& pos) const {
         if (!DATA || DATA == DRAGGED)
             continue;
         const auto W   = windowOf(DATA);
-        const CBox BOX = W ? visualBoxFor(W) : SLOT.box;
+        const CBox BOX = W ? realWindowBox(W) : SLOT.box;
         if (BOX.containsPoint(pos))
             return &SLOT;
     }
@@ -377,74 +477,30 @@ const COverview::SSlot* COverview::slotFor(const SP<SScrollingWindowData>& data)
     return nullptr;
 }
 
-bool COverview::isManagedWindow(const PHLWINDOW& window) const {
+void COverview::placeWindow(const PHLWINDOW& window, const CBox& box) {
     if (!window)
-        return false;
-    if (m_active) {
-        return std::ranges::any_of(m_slots, [&](const SSlot& slot) { return windowOf(slot.data.lock()) == window; });
-    }
-    if (m_closing) {
-        return std::ranges::any_of(m_closeEntries, [&](const SCloseEntry& entry) { return entry.window.lock() == window; });
-    }
-    return false;
-}
-
-CBox COverview::visualBoxFor(const PHLWINDOW& window) const {
-    if (!window)
-        return {};
-    const auto REAL = window->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
-    if (const auto IT = m_visualBoxes.find(window.get()); IT != m_visualBoxes.end())
-        return fitPreviewBox(IT->second, REAL);
-    return realWindowBox(window);
-}
-
-void COverview::updateVisualBoxes() {
-    const auto DRAGGED = m_dragMoved ? m_dragging.lock() : nullptr;
-
-    if (m_active) {
-        const float P = m_progress ? std::clamp(m_progress->value(), 0.F, 1.F) : 1.F;
-        std::unordered_map<const Desktop::View::CWindow*, CBox> next;
-        for (const auto& SLOT : m_slots) {
-            const auto DATA   = SLOT.data.lock();
-            const auto WINDOW = windowOf(DATA);
-            if (!WINDOW)
-                continue;
-            if (DATA == DRAGGED) {
-                if (const auto IT = m_visualBoxes.find(WINDOW.get()); IT != m_visualBoxes.end())
-                    next[WINDOW.get()] = IT->second;
-                else
-                    next[WINDOW.get()] = fitPreviewBox(SLOT.box, WINDOW->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT));
-                continue;
-            }
-            if (const auto IT = m_anims.find(WINDOW.get()); IT != m_anims.end())
-                next[WINDOW.get()] = lerpBox(IT->second.from, IT->second.to, P);
-            else
-                next[WINDOW.get()] = fitPreviewBox(SLOT.box, WINDOW->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT));
-        }
-        m_visualBoxes = std::move(next);
         return;
-    }
-
-    if (m_closing) {
-        const float P = m_progress ? std::clamp(m_progress->value(), 0.F, 1.F) : 1.F;
-        std::unordered_map<const Desktop::View::CWindow*, CBox> next;
-        for (const auto& E : m_closeEntries) {
-            const auto W = E.window.lock();
-            if (!W || !W->mapped())
-                continue;
-            if (E.wasHidden && W->isHidden())
-                next[W.get()] = E.from;
-            else
-                next[W.get()] = lerpBox(E.from, realWindowBox(W), P);
-        }
-        m_visualBoxes = std::move(next);
-    }
+    // Keep GEOMETRIC_GOAL at the window's real layout geometry so clients
+    // never receive thumbnail configures or reflow; move only value()
+    // (GEOMETRIC_CURRENT) for Hyprland's native renderWindow pass.
+    window->positionAnimation()->warp(false, true);
+    window->sizeAnimation()->warp(false, true);
+    window->positionAnimation()->value() = box.pos();
+    window->sizeAnimation()->value()     = box.size();
+    window->presentation().setAnimatingIn(true);
+    window->presentation().updateDecorations();
 }
 
 void COverview::finishClosing() {
     m_closing = false;
+    for (const auto& E : m_closeEntries) {
+        if (const auto W = E.window.lock(); W && W->mapped()) {
+            restoreWindowToGoal(W);
+            if (const auto& A = W->presentation().alpha(Desktop::View::WINDOW_ALPHA_FULLSCREEN))
+                A->setValueAndWarp(W->isBlockedByFullscreen() ? 0.F : 1.F);
+        }
+    }
     m_closeEntries.clear();
-    m_visualBoxes.clear();
     m_slots.clear();
     m_floating.clear();
     for (const auto& r : m_marked) {
@@ -452,105 +508,10 @@ void COverview::finishClosing() {
             markInOverview(W, false);
     }
     m_marked.clear();
+    const auto PARENT = m_layout->m_parent.lock();
+    if (const auto WS = PARENT && PARENT->space() ? PARENT->space()->workspace() : nullptr)
+        WS->updateWindows();
     damage();
-}
-
-void COverview::queueWindowPreview(Render::CRenderContext& ctx, const PHLWINDOW& window, const PHLMONITOR& mon, const CBox& box, float fadeAlpha) const {
-    if (!window || !mon || !window->mapped() || !window->wlSurface() || !window->wlSurface()->resource())
-        return;
-    if (!ctx.shouldRenderContent(window->m_ruleApplicator->noScreenShare().valueOrDefault()))
-        return;
-    if (fadeAlpha <= 0.001F)
-        return;
-
-    const Vector2D REALSIZE = window->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
-    if (REALSIZE.x < 1.0 || REALSIZE.y < 1.0 || box.w < 1.0 || box.h < 1.0)
-        return;
-
-    const CBox     FITTED = fitPreviewBox(box, REALSIZE);
-    const float    SCALE  = (float)std::min(FITTED.w / REALSIZE.x, FITTED.h / REALSIZE.y);
-    const Vector2D OFFSET_IN_MON{
-        std::max(0.0, (mon->m_size.x - REALSIZE.x) / 2.0),
-        std::max(0.0, (mon->m_size.y - REALSIZE.y) / 2.0),
-    };
-    const Vector2D SRC_PX    = OFFSET_IN_MON * mon->m_scale;
-    const Vector2D DST_PX    = (FITTED.pos() - mon->m_position) * mon->m_scale;
-    const Vector2D TRANSLATE = DST_PX - SRC_PX * SCALE;
-
-    Render::SRenderModifData mod;
-    mod.modifs.emplace_back(Render::SRenderModifData::eRenderModifType::RMOD_TYPE_SCALE, SCALE);
-    mod.modifs.emplace_back(Render::SRenderModifData::eRenderModifType::RMOD_TYPE_TRANSLATE, TRANSLATE);
-
-    CSurfacePassElement::SRenderData renderdata{mon, Time::steadyNow()};
-    renderdata.pos           = mon->m_position + OFFSET_IN_MON;
-    renderdata.w             = std::max(REALSIZE.x, 5.0);
-    renderdata.h             = std::max(REALSIZE.y, 5.0);
-    renderdata.dontRound     = Fullscreen::controller()->getFullscreenModes(window).internal == Fullscreen::FSMODE_FULLSCREEN;
-    const float RAW_ROUND    = window->presentation().rounding();
-    renderdata.rounding      = (renderdata.dontRound || RAW_ROUND <= 0.F)
-             ? 0
-             : (int)std::round(std::max(0.0f, RAW_ROUND * mon->m_scale - 1.0f) * SCALE) + 1;
-    renderdata.roundingPower = renderdata.dontRound ? 2.0f : window->presentation().roundingPower();
-    renderdata.alpha         = window->m_ruleApplicator->opaque().valueOrDefault() ? 1.F : window->presentation().alphaValue(Desktop::View::WINDOW_ALPHA_ACTIVE);
-    renderdata.fadeAlpha     = fadeAlpha;
-    renderdata.decorate      = false;
-    renderdata.pWindow       = window;
-
-    Render::SWindowRenderPresentation pres;
-    pres.alpha                      = renderdata.alpha;
-    pres.fadeAlpha                  = renderdata.fadeAlpha;
-    pres.alphaVisible               = true;
-    renderdata.workspacePresentation = pres;
-    renderdata.blur                 = !ctx.m_renderingSnapshot && window->shouldBlur(pres);
-
-    static auto PXWLUSENN = CConfigValue<Config::INTEGER>("xwayland:use_nearest_neighbor");
-    if ((window->backend().isX11() && *PXWLUSENN) || window->m_ruleApplicator->nearestNeighbor().valueOrDefault())
-        renderdata.useNearestNeighbor = true;
-
-    const auto scope = makeShared<SBackdropScope>();
-    Render::IHyprRenderer::addPassElement(ctx, makeUnique<CBackdropScopePassElement>(CBackdropScopePassElement::eAction::BEGIN, scope));
-    Render::IHyprRenderer::addPassElement(ctx, makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{.renderModif = mod}));
-
-    const auto PREV_WINDOW = ctx.m_data.currentWindow;
-    ctx.m_data.currentWindow = window;
-
-    if (window->wlSurface()->small() && !window->wlSurface()->m_fillIgnoreSmall && renderdata.blur) {
-        CBox wb = {renderdata.pos.x - mon->m_position.x, renderdata.pos.y - mon->m_position.y, renderdata.w, renderdata.h};
-        wb.scale(mon->m_scale).round();
-        CRectPassElement::SRectData data;
-        data.color                 = CHyprColor(0, 0, 0, 0);
-        data.box                   = wb;
-        data.round                 = renderdata.dontRound ? 0 : renderdata.rounding - 1;
-        data.blur                  = true;
-        data.blurA                 = renderdata.fadeAlpha;
-        data.xray                  = g_pHyprRenderer->shouldUseNewBlurOptimizations(ctx, nullptr, window);
-        data.blurPatternBox        = wb;
-        data.blurOwner             = window;
-        data.workspacePresentation = pres;
-        Render::IHyprRenderer::addPassElement(ctx, makeUnique<CRectPassElement>(data));
-        renderdata.blur = false;
-    }
-
-    renderdata.surfaceCounter = 0;
-    window->wlSurface()->resource()->breadthfirst(
-        [&](SP<CWLSurfaceResource> s, const Vector2D& offset, void*) {
-            if (!s->m_current.texture)
-                return;
-            if (s->m_current.size.x < 1 || s->m_current.size.y < 1)
-                return;
-
-            renderdata.localPos    = offset;
-            renderdata.texture     = s->m_current.texture;
-            renderdata.surface     = s;
-            renderdata.mainSurface = s == window->wlSurface()->resource();
-            Render::IHyprRenderer::addPassElement(ctx, makeUnique<CSurfacePassElement>(renderdata));
-            renderdata.surfaceCounter++;
-        },
-        nullptr);
-
-    ctx.m_data.currentWindow = PREV_WINDOW;
-    Render::IHyprRenderer::addPassElement(ctx, makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{.renderModif = Render::SRenderModifData{}}));
-    Render::IHyprRenderer::addPassElement(ctx, makeUnique<CBackdropScopePassElement>(CBackdropScopePassElement::eAction::END, scope));
 }
 
 void COverview::apply(bool instant) {
@@ -578,18 +539,16 @@ void COverview::apply(bool instant) {
         if (!WINDOW || DATA == DRAGGED)
             continue;
 
-        const CBox TO   = fitPreviewBox(SLOT.box, WINDOW->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT));
+        const CBox TO   = fitPreviewBox(SLOT.box, realGoalBox(WINDOW).size()).round();
         const auto PREV = m_anims.find(WINDOW.get());
         changed         = changed || PREV == m_anims.end() || PREV->second.to != TO;
 
         // Start from wherever the window is drawn right now, so retargeting
         // mid-animation (opening/closing windows, drops) is smooth.
         const bool APPEAR  = DATA->parked || DATA->layoutBox.empty() || WINDOW->isHidden();
-        CBox       current = realWindowBox(WINDOW);
-        if (const auto IT = m_visualBoxes.find(WINDOW.get()); IT != m_visualBoxes.end())
-            current = IT->second;
+        const CBox CURRENT = realWindowBox(WINDOW);
 
-        anims[WINDOW.get()] = {.from = APPEAR ? TO : current, .to = TO};
+        anims[WINDOW.get()] = {.from = APPEAR ? TO : CURRENT, .to = TO};
         DATA->parked        = false;
     }
     changed = changed || anims.size() != m_anims.size();
@@ -605,6 +564,7 @@ void COverview::apply(bool instant) {
         return;
 
     m_anims = std::move(anims);
+    m_progress->setCallbackOnEnd([](auto) {}, false);
 
     if (instant || !g_config.overview_animate->value()) {
         m_progress->setValueAndWarp(1.F);
@@ -621,7 +581,36 @@ void COverview::step() {
     if (!m_active && !m_closing)
         return;
 
-    updateVisualBoxes();
+    const float P = m_progress ? std::clamp(m_progress->value(), 0.F, 1.F) : 1.F;
+
+    if (m_active) {
+        const auto DRAGGED = m_dragMoved ? m_dragging.lock() : nullptr;
+        for (const auto& SLOT : m_slots) {
+            const auto DATA   = SLOT.data.lock();
+            const auto WINDOW = windowOf(DATA);
+            if (!WINDOW || DATA == DRAGGED)
+                continue;
+            const auto IT = m_anims.find(WINDOW.get());
+            if (IT == m_anims.end())
+                continue;
+            placeWindow(WINDOW, lerpBox(IT->second.from, IT->second.to, P));
+        }
+        damage();
+        return;
+    }
+
+    for (const auto& E : m_closeEntries) {
+        const auto W = E.window.lock();
+        if (!W || !W->mapped() || (E.wasHidden && W->isHidden()))
+            continue;
+        const CBox GOAL = realGoalBox(W);
+        const CBox BOX  = lerpBox(E.from, GOAL, P);
+        placeWindow(W, BOX);
+        if (GOAL.w >= 1.0 && GOAL.h >= 1.0 && std::min(BOX.w / GOAL.w, BOX.h / GOAL.h) >= 0.85) {
+            if (std::erase_if(m_marked, [&](const PHLWINDOWREF& r) { return r.lock() == W; }) > 0)
+                markInOverview(W, false);
+        }
+    }
     damage();
 }
 
@@ -824,7 +813,6 @@ void COverview::open() {
         return;
 
     if (m_closing) {
-        updateVisualBoxes();
         m_closing = false;
         m_closeEntries.clear();
     }
@@ -1046,10 +1034,10 @@ void COverview::open() {
 
         if (m_dragMoved) {
             const auto DATA   = m_dragging.lock();
+            const auto SLOT   = DATA ? slotFor(DATA) : nullptr;
             const auto WINDOW = windowOf(DATA);
-            if (WINDOW) {
-                const CBox CUR              = visualBoxFor(WINDOW);
-                m_visualBoxes[WINDOW.get()] = CBox{pos - m_grabOffset, CUR.size()}.round();
+            if (SLOT && WINDOW) {
+                placeWindow(WINDOW, CBox{pos - m_grabOffset, SLOT->box.size()}.round());
                 damage();
             }
             return;
@@ -1059,7 +1047,7 @@ void COverview::open() {
             select(SLOT->data.lock());
 
         const auto SEL_WIN = windowOf(m_selected.lock());
-        const bool HOVER   = SEL_WIN && closeButtonBox(visualBoxFor(SEL_WIN)).containsPoint(pos);
+        const bool HOVER   = SEL_WIN && closeButtonBox(realWindowBox(SEL_WIN)).containsPoint(pos);
         if (HOVER != m_closeHover) {
             m_closeHover = HOVER;
             damage();
@@ -1105,7 +1093,7 @@ void COverview::open() {
             return;
 
         if (PRESSED) {
-            if (const auto SEL_WIN = windowOf(m_selected.lock()); SEL_WIN && closeButtonBox(visualBoxFor(SEL_WIN)).containsPoint(POS)) {
+            if (const auto SEL_WIN = windowOf(m_selected.lock()); SEL_WIN && closeButtonBox(realWindowBox(SEL_WIN)).containsPoint(POS)) {
                 closeSelected();
                 m_ignoreRelease = true;
                 return;
@@ -1117,7 +1105,7 @@ void COverview::open() {
             m_ignoreRelease     = false;
             m_pressPos          = POS;
             m_dragging          = SLOT ? SLOT->data : WP<SScrollingWindowData>{};
-            m_grabOffset        = SLOT_WIN ? POS - visualBoxFor(SLOT_WIN).pos() : Vector2D{};
+            m_grabOffset        = SLOT_WIN ? POS - realWindowBox(SLOT_WIN).pos() : Vector2D{};
             return;
         }
 
@@ -1187,33 +1175,12 @@ void COverview::open() {
             const auto stage = ev.stage;
             if (!m_overlay || !ev.context || ev.context->get().m_renderingSnapshot)
                 return;
-            if (stage != RENDER_PRE_WINDOWS && stage != RENDER_PRE_WINDOW && stage != RENDER_POST_WINDOW && stage != RENDER_POST_WINDOWS)
+            if (stage != RENDER_PRE_WINDOWS && stage != RENDER_POST_WINDOWS)
                 return;
             const auto MON = monitor();
             if (!MON || ev.monitor != MON)
                 return;
             auto& ctx = ev.context->get();
-
-            if (stage == RENDER_PRE_WINDOW) {
-                if (!m_renderingOverview && isManagedWindow(ctx.m_data.currentWindow.lock())) {
-                    m_discardPass.clear();
-                    m_discardGuard = Render::IHyprRenderer::redirectPass(ctx, &m_discardPass);
-                }
-                return;
-            }
-
-            if (stage == RENDER_POST_WINDOW) {
-                if (m_discardGuard) {
-                    m_discardGuard.reset();
-                    m_discardPass.clear();
-                }
-                return;
-            }
-
-            if (m_discardGuard) {
-                m_discardGuard.reset();
-                m_discardPass.clear();
-            }
 
             // Switched to another workspace meanwhile (gesture, hyprctl...):
             // close instead of grabbing input for a hidden workspace. Deferred,
@@ -1228,27 +1195,14 @@ void COverview::open() {
                 return;
             }
 
-            if (stage == RENDER_POST_WINDOWS && (m_active || m_closing)) {
-                updateVisualBoxes();
-
-                const auto DRAGGED  = m_dragMoved ? m_dragging.lock() : nullptr;
-                const auto DRAG_WIN = windowOf(DRAGGED);
-
-                std::vector<PHLWINDOW> drawOrder;
-                for (const auto& w : Desktop::windowState()->windows()) {
-                    if (w != DRAG_WIN && isManagedWindow(w))
-                        drawOrder.push_back(w);
-                }
-                if (m_active && DRAG_WIN && isManagedWindow(DRAG_WIN))
-                    drawOrder.push_back(DRAG_WIN);
-
-                m_renderingOverview = true;
-                Hyprutils::Utils::CScopeGuard overviewGuard([this] { m_renderingOverview = false; });
-
-                const float OALPHA = overlayAlpha();
-                for (const auto& w : drawOrder) {
-                    const float FADE = w->isHidden() ? OALPHA : w->presentation().alphaValue(Desktop::View::WINDOW_ALPHA_FADE);
-                    queueWindowPreview(ctx, w, MON, visualBoxFor(w), FADE);
+            // Hyprland doesn't draw hidden windows; draw the minimized ones
+            // into their slots ourselves (draw() dims them).
+            if (stage == RENDER_POST_WINDOWS && m_active) {
+                for (const auto& SLOT : m_slots) {
+                    const auto DATA   = SLOT.data.lock();
+                    const auto WINDOW = windowOf(DATA);
+                    if (WINDOW && WINDOW->isHidden() && WINDOW->mapped())
+                        renderHiddenWindow(ctx, WINDOW, MON, overlayAlpha());
                 }
             }
 
@@ -1300,8 +1254,6 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     if (!m_active)
         return;
 
-    updateVisualBoxes();
-
     const auto PICK_WIN = windowOf(pick);
     m_closeEntries.clear();
     for (const auto& SLOT : m_slots) {
@@ -1311,15 +1263,29 @@ void COverview::close(SP<SScrollingWindowData> pick) {
         // Restoring a hidden window is handed back to restoreMinimized / hyprflow Genie.
         if (W->isHidden() && W == PICK_WIN)
             continue;
-        m_closeEntries.push_back({.window = W, .from = visualBoxFor(W), .wasHidden = W->isHidden()});
+        m_closeEntries.push_back({.window = W, .from = realWindowBox(W), .wasHidden = W->isHidden()});
     }
+
+    // Unmark any overview windows that aren't zooming back in m_closeEntries.
+    std::erase_if(m_marked, [this](const PHLWINDOWREF& r) {
+        const auto W = r.lock();
+        if (W && std::ranges::any_of(m_closeEntries, [&](const SCloseEntry& e) { return e.window.lock() == W && !(e.wasHidden && W->isHidden()); }))
+            return false;
+        if (W) {
+            restoreWindowToGoal(W);
+            markInOverview(W, false);
+        }
+        return true;
+    });
 
     m_active = false;
     if (m_session)
         *m_session = false;
     stopInput();
-    if (m_progress)
+    if (m_progress) {
+        m_progress->setCallbackOnEnd([](auto) {}, false);
         m_progress->warp(false);
+    }
     m_anims.clear();
     m_pressed   = false;
     m_dragMoved = false;
@@ -1370,10 +1336,6 @@ void COverview::close(SP<SScrollingWindowData> pick) {
     }
     m_fullscreenWindow.reset();
 
-    // Update layout scroll offset / focus on close (windows themselves keep
-    // their real sizes while in overview; floating windows never moved).
-    m_layout->m_scrollingData->recalculate(!g_config.overview_animate->value());
-
     if (pick && target && isFloating(pick)) {
         if (const auto W = target->window()) {
             Desktop::focusState()->fullWindowFocus(W, Desktop::FOCUS_REASON_OTHER);
@@ -1381,6 +1343,12 @@ void COverview::close(SP<SScrollingWindowData> pick) {
         }
     } else if (pick && target)
         m_layout->focusTargetUpdate(target);
+
+    // Finalize real layout goal boxes & warp Hyprland's built-in animations so
+    // only m_progress drives the smooth close zoom without configure storms on
+    // unchanged floating windows.
+    if (!m_layout->m_scrollingData->columns.empty())
+        m_layout->m_scrollingData->recalculate(true);
 
     if (!g_config.overview_animate->value() || m_closeEntries.empty()) {
         finishClosing();
@@ -1392,12 +1360,30 @@ void COverview::close(SP<SScrollingWindowData> pick) {
         return;
     }
 
-    m_closing = true;
+    // Re-anchor each closing window at its current overview box so frame 0 of
+    // the close zoom starts smoothly from where it was drawn, and fade any
+    // blocked windows behind an active fullscreen window so they never pop over it.
+    for (const auto& E : m_closeEntries) {
+        if (const auto W = E.window.lock(); W && W->mapped() && !(E.wasHidden && W->isHidden())) {
+            placeWindow(W, E.from);
+            if (W->isBlockedByFullscreen()) {
+                if (const auto& A = W->presentation().alpha(Desktop::View::WINDOW_ALPHA_FULLSCREEN))
+                    *A = 0.F;
+            }
+        }
+    }
+
     if (!m_progress) {
         Animation::mgr()->createAnimation(0.F, m_progress, Config::animationTree()->getAnimationPropertyConfig("windowsMove"), AVARDAMAGE_NONE);
         m_progress->setUpdateCallback([this](auto) { step(); });
     }
+    m_progress->setCallbackOnEnd([](auto) {}, false);
     m_progress->setValueAndWarp(0.F);
+    m_closing = true;
+    m_progress->setCallbackOnEnd([this, ALIVE = WP<bool>{m_alive}](auto) {
+        if (ALIVE.lock() && m_closing)
+            finishClosing();
+    }, false);
     *m_progress = 1.F;
     damage();
 }
@@ -1468,6 +1454,25 @@ void COverview::moveSelection(Math::eDirection dir) {
                 if (D < best) {
                     best = D;
                     next = S.data.lock();
+                }
+            }
+        } else {
+            const Vector2D CUR       = SLOT->box.middle();
+            double         bestScore = INFINITY;
+            for (const auto& S : m_slots) {
+                const auto D = S.data.lock();
+                if (!D || D == CURRENT)
+                    continue;
+                const Vector2D M       = S.box.middle();
+                const double   DX      = M.x - CUR.x;
+                const double   DY      = M.y - CUR.y;
+                const double   PRIMARY = dir == Math::DIRECTION_LEFT ? -DX : DX;
+                if (PRIMARY <= 1.0)
+                    continue;
+                const double SCORE = PRIMARY + 2.5 * std::abs(DY);
+                if (SCORE < bestScore) {
+                    bestScore = SCORE;
+                    next      = D;
                 }
             }
         }
@@ -1871,6 +1876,24 @@ void COverview::draw(Render::CRenderContext& ctx, eRenderStage stage) {
     bool        animate = m_active ? ALPHA < 1.F : ALPHA > 0.F;
 
     if (stage == RENDER_PRE_WINDOWS) {
+        if (m_active) {
+            for (const auto& SLOT : m_slots) {
+                if (const auto WINDOW = windowOf(SLOT.data.lock()))
+                    WINDOW->presentation().setAnimatingIn(true);
+            }
+            for (const auto& r : m_marked) {
+                if (const auto W = r.lock()) {
+                    fadeShadowOut(W);
+                    if (const auto& A = W->presentation().alpha(Desktop::View::WINDOW_ALPHA_FULLSCREEN))
+                        A->setValueAndWarp(1.F);
+                }
+            }
+        } else if (m_closing) {
+            for (const auto& E : m_closeEntries) {
+                if (const auto W = E.window.lock(); W && !(E.wasHidden && W->isHidden()))
+                    W->presentation().setAnimatingIn(true);
+            }
+        }
         // Dim the wallpaper behind the zoomed-out windows.
         if (ALPHA > 0.F)
             g_pHyprOpenGL->renderRect(ctx, CBox{{}, MON->m_pixelSize}, CHyprColor{0, 0, 0, OV_DIM * ALPHA}, {});
@@ -1898,24 +1921,23 @@ void COverview::draw(Render::CRenderContext& ctx, eRenderStage stage) {
         return;
     }
 
-    const float SCALE    = MON->m_scale;
-    const auto  SELECTED = m_selected.lock();
-    const auto  DRAGGED  = m_dragMoved ? m_dragging.lock() : nullptr;
-    const auto  DRAG_WIN = windowOf(DRAGGED);
-    const CBox  DRAG_BOX = DRAG_WIN ? visualBoxFor(DRAG_WIN) : CBox{};
+    const float SCALE      = MON->m_scale;
+    const float PILL_ALPHA = std::clamp((ALPHA - 0.55F) / 0.45F, 0.F, 1.F);
+    const auto  SELECTED   = m_selected.lock();
+    const auto  DRAGGED    = m_dragMoved ? m_dragging.lock() : nullptr;
+    const auto  DRAG_WIN   = windowOf(DRAGGED);
+    const CBox  DRAG_BOX   = DRAG_WIN ? realWindowBox(DRAG_WIN) : CBox{};
 
     for (const auto& SLOT : m_slots) {
         const auto DATA   = SLOT.data.lock();
         const auto WINDOW = windowOf(DATA);
-        if (!WINDOW || (!m_active && !isManagedWindow(WINDOW)))
+        if (!WINDOW || !WINDOW->mapped())
             continue;
 
-        const CBox     global     = visualBoxFor(WINDOW);
-        const Vector2D REAL       = WINDOW->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
-        const double   WIN_SCALE  = std::min(global.w / std::max(1.0, REAL.x), global.h / std::max(1.0, REAL.y));
-        const bool     DONT_ROUND = Fullscreen::controller()->getFullscreenModes(WINDOW).internal == Fullscreen::FSMODE_FULLSCREEN;
-        const float    RAW_ROUND  = WINDOW->presentation().rounding();
-        const int      WIN_ROUND  = (DONT_ROUND || RAW_ROUND <= 0.F) ? 0 : (int)std::round(RAW_ROUND * WIN_SCALE * SCALE);
+        const CBox  global     = realWindowBox(WINDOW);
+        const bool  DONT_ROUND = Fullscreen::controller()->getFullscreenModes(WINDOW).internal == Fullscreen::FSMODE_FULLSCREEN;
+        const float RAW_ROUND  = WINDOW->presentation().rounding();
+        const int   WIN_ROUND  = (DONT_ROUND || RAW_ROUND <= 0.F) ? 0 : (int)std::round(RAW_ROUND * SCALE);
 
         if (WINDOW->isHidden() && m_active) {
             const CBox LOCAL = global.copy().translate(-MON->m_position).scale(SCALE).round();
@@ -1938,9 +1960,9 @@ void COverview::draw(Render::CRenderContext& ctx, eRenderStage stage) {
                                         {.round = HL_ROUND, .borderSize = BORDER, .a = ALPHA});
 
             // Close button, once the highlight has arrived (red on hover).
-            if (const CBox BTN = closeButtonBox(global); !BTN.empty() && MS >= OV_HIGHLIGHT_MS && !m_menuOpen && !DRAG_WIN) {
+            if (const CBox BTN = closeButtonBox(global); PILL_ALPHA > 0.001F && !BTN.empty() && MS >= OV_HIGHLIGHT_MS && !m_menuOpen && !DRAG_WIN) {
                 const CBox B  = BTN.copy().translate(-MON->m_position).scale(SCALE).round();
-                const auto BG = m_closeHover ? CHyprColor{0.86F, 0.24F, 0.24F, 0.95F * ALPHA} : CHyprColor{0.08F, 0.08F, 0.10F, 0.72F * ALPHA};
+                const auto BG = m_closeHover ? CHyprColor{0.86F, 0.24F, 0.24F, 0.95F * PILL_ALPHA} : CHyprColor{0.08F, 0.08F, 0.10F, 0.72F * PILL_ALPHA};
                 g_pHyprOpenGL->renderRect(ctx, B, BG, {.round = (int)(B.w / 2)});
                 const std::string KEY = "\x01close" + std::to_string((int)std::round(15 * SCALE));
                 auto              tex = m_textCache[KEY];
@@ -1948,11 +1970,11 @@ void COverview::draw(Render::CRenderContext& ctx, eRenderStage stage) {
                     tex = m_textCache[KEY] = g_pHyprRenderer->renderText("×", CHyprColor{1, 1, 1, 1}, (int)std::round(15 * SCALE), false, "", 0, 400);
                 if (tex)
                     g_pHyprOpenGL->renderTexture(ctx, tex, CBox{B.x + (B.w - tex->m_size.x) / 2.0, B.y + (B.h - tex->m_size.y) / 2.0, tex->m_size.x, tex->m_size.y}.round(),
-                                                 {.a = ALPHA});
+                                                 {.a = PILL_ALPHA});
             }
         }
 
-        if (!g_config.overview_titles->value())
+        if (!g_config.overview_titles->value() || PILL_ALPHA <= 0.001F)
             continue;
 
         // The dragged window is drawn above the others; their labels would
@@ -1962,9 +1984,8 @@ void COverview::draw(Render::CRenderContext& ctx, eRenderStage stage) {
 
         // Size the label for the window's slot, not its animated box: the box
         // changes every frame of the zoom and would re-render the text each time.
-        const CBox   BOX   = global.copy().translate(-MON->m_position).scale(SCALE).round();
-        const double FIT_W = fitPreviewBox(SLOT.box, REAL).w;
-        const auto   TEX   = BOX.w > 1 ? text(WINDOW->metadata().title(), (int)std::round((FIT_W - 32) * SCALE)) : nullptr;
+        const CBox BOX = global.copy().translate(-MON->m_position).scale(SCALE).round();
+        const auto TEX = BOX.w > 1 ? text(WINDOW->metadata().title(), (int)std::round((SLOT.box.w - 32) * SCALE)) : nullptr;
         if (!TEX)
             continue;
 
@@ -1975,8 +1996,8 @@ void COverview::draw(Render::CRenderContext& ctx, eRenderStage stage) {
         pill.w += 2 * (PAD_X - PAD_Y);
         pill.round();
 
-        g_pHyprOpenGL->renderRect(ctx, pill, CHyprColor{0, 0, 0, 0.65F * ALPHA}, {.round = (int)(pill.h / 2)});
-        g_pHyprOpenGL->renderTexture(ctx, TEX, TEXT.copy().round(), {.a = ALPHA});
+        g_pHyprOpenGL->renderRect(ctx, pill, CHyprColor{0, 0, 0, 0.65F * PILL_ALPHA}, {.round = (int)(pill.h / 2)});
+        g_pHyprOpenGL->renderTexture(ctx, TEX, TEXT.copy().round(), {.a = PILL_ALPHA});
     }
 
     if (m_menuOpen && m_active)
