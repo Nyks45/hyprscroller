@@ -1234,9 +1234,6 @@ void CScrollingLayout::removeTarget(SP<Layout::ITarget> target) {
     if (!DATA)
         return;
 
-    // Undo Hyprland's size broadcast to the remaining windows (see Overview.cpp).
-    m_overview->onWindowRemoved();
-
     auto COL = DATA->column.lock();
     if (!COL)
         return;

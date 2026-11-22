@@ -6,11 +6,18 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <hyprland/src/SharedDefs.hpp>
 #include <hyprland/src/helpers/AnimatedVariable.hpp>
 #include <hyprland/src/render/Texture.hpp>
+#include <hyprland/src/render/pass/Pass.hpp>
+#include <hyprutils/utils/ScopeGuard.hpp>
+
+namespace Desktop::View {
+    class CWindow;
+}
 
 namespace Render {
     class CRenderContext;
@@ -19,11 +26,9 @@ namespace Render {
 // niri-style overview: the whole scrolling strip of a workspace zooms out so
 // every column (and every stacked window) is visible in its real arrangement.
 //
-// The zoom is purely visual: windows' on-screen boxes are moved to scaled
-// slots without telling clients (Hyprland sends a configure whenever a
-// window's size *animation* begins, so boxes are driven frame by frame from
-// one progress animation that uses the windowsMove curve instead). Clients
-// keep their size and nothing reflows; their buffers are drawn scaled.
+// The zoom is purely visual: windows keep their real position and size (so
+// clients never receive configures or reflow). Normal window passes are
+// discarded while the overview draws their surfaces scaled via renderModif.
 //
 // While open, the overview owns pointer and keyboard input: click/Enter to
 // pick, arrows/wheel to move the selection, drag to rearrange, right-click
@@ -54,9 +59,6 @@ class COverview {
     void apply(bool instant = false);
     // Called from the render pass element.
     void draw(Render::CRenderContext& ctx, eRenderStage stage);
-    // A window is leaving the layout while open. Hyprland then force-reports
-    // every window's current (thumbnail) size to its client; undo that.
-    void onWindowRemoved();
 
   private:
     struct SSlot {
@@ -136,52 +138,65 @@ class COverview {
 
     // True while this open/close cycle is open; deferred callbacks hold a weak
     // ref so they never act on a closed overview or a destroyed layout.
-    SP<bool>                                               m_session;
-    // Windows zooming back after close. They keep m_animatingIn (drawn scaled)
-    // until their move/resize animation ends, then it's cleared: Hyprland
-    // won't, and leaving it set would squash every later shrink animation.
-    std::vector<PHLWINDOWREF>                              m_restoring;
+    SP<bool>                                                   m_session;
     // Windows marked as in the overview (see markInOverview): from open until
-    // they're back at full size after close.
-    std::vector<PHLWINDOWREF>                              m_marked;
+    // zoom-back finishes after close.
+    std::vector<PHLWINDOWREF>                                  m_marked;
     // Lives as long as this object; deferred callbacks that aren't tied to an
-    // open session (opening after leaving fullscreen) check it.
-    SP<bool>                                               m_alive = makeShared<bool>(true);
+    // open session check it.
+    SP<bool>                                                   m_alive = makeShared<bool>(true);
 
-    // Window that was fullscreen (or maximized) when the overview opened, and
-    // its modes; it is restored if it's picked again (or nothing else is).
-    PHLWINDOWREF                                           m_fullscreenWindow;
-    int8_t                                                 m_fullscreenInternal = 0;
-    int8_t                                                 m_fullscreenClient   = 0;
+    // Window that was fullscreen (or maximized) when the overview opened; it is
+    // left untouched unless a different window is picked on close.
+    PHLWINDOWREF                                               m_fullscreenWindow;
 
     // One progress value (0 -> 1, windowsMove curve) drives every window from
-    // its box when the animation (re)started to its slot.
+    // its box when the animation (re)started to its slot (or back on close).
     struct SAnim {
         CBox from, to;
     };
-    PHLANIMVAR<float>                                      m_progress;
-    std::unordered_map<const SScrollingWindowData*, SAnim> m_anims;
+    struct SCloseEntry {
+        PHLWINDOWREF window;
+        CBox         from;
+        bool         wasHidden = false;
+    };
+    PHLANIMVAR<float>                                          m_progress;
+    std::unordered_map<const Desktop::View::CWindow*, SAnim>   m_anims;
+    std::unordered_map<const Desktop::View::CWindow*, CBox>    m_visualBoxes;
+    bool                                                       m_closing = false;
+    std::vector<SCloseEntry>                                   m_closeEntries;
 
-    CHyprSignalListener                                    m_keyListener;
-    CHyprSignalListener                                    m_buttonListener;
-    CHyprSignalListener                                    m_moveListener;
-    CHyprSignalListener                                    m_axisListener;
-    CHyprSignalListener                                    m_closeListener; // floating windows closing while open
-    CHyprSignalListener                                    m_renderListener;
+    Render::CRenderPass                                        m_discardPass;
+    UP<Hyprutils::Utils::CScopeGuard>                          m_discardGuard;
+    bool                                                       m_renderingOverview = false;
 
-    PHLMONITOR                                             monitor() const;
-    void                                                   computeSlots();
-    const SSlot*                                           slotAt(const Vector2D& pos) const;
-    const SSlot*                                           slotFor(const SP<SScrollingWindowData>& data) const;
-    float                                                  overlayAlpha() const;
-    void                                                   damage() const;
-    void                                                   select(const SP<SScrollingWindowData>& data);
-    void                                                   moveSelection(Math::eDirection dir);
-    void                                                   drop(const Vector2D& pos);
-    SP<Render::ITexture>                                   text(const std::string& str, int maxWidthPx);
-    void                                                   stopInput();
-    void                                                   step();
-    static void                                            placeWindow(const PHLWINDOW& window, const CBox& box);
+    std::unordered_set<uint32_t>                               m_consumedKeys;
+
+    CHyprSignalListener                                        m_keyListener;
+    CHyprSignalListener                                        m_buttonListener;
+    CHyprSignalListener                                        m_moveListener;
+    CHyprSignalListener                                        m_axisListener;
+    CHyprSignalListener                                        m_closeListener; // floating windows closing while open
+    CHyprSignalListener                                        m_renderListener;
+
+    PHLMONITOR                                                 monitor() const;
+    void                                                       computeSlots();
+    const SSlot*                                               slotAt(const Vector2D& pos) const;
+    const SSlot*                                               slotFor(const SP<SScrollingWindowData>& data) const;
+    float                                                      overlayAlpha() const;
+    void                                                       damage() const;
+    void                                                       select(const SP<SScrollingWindowData>& data);
+    void                                                       moveSelection(Math::eDirection dir);
+    void                                                       drop(const Vector2D& pos);
+    SP<Render::ITexture>                                       text(const std::string& str, int maxWidthPx);
+    void                                                       stopInput();
+    void                                                       step();
+    void                                                       updateVisualBoxes();
+    void                                                       finishClosing();
+    bool                                                       isManagedWindow(const PHLWINDOW& window) const;
+    CBox                                                       visualBoxFor(const PHLWINDOW& window) const;
+    void                                                       queueWindowPreview(Render::CRenderContext& ctx, const PHLWINDOW& window, const PHLMONITOR& mon, const CBox& box,
+                                                                                  float fadeAlpha) const;
 
     void                                                   openMenu(const SP<SScrollingWindowData>& data, const Vector2D& pos);
     void                                                   setMenuItems(std::vector<SMenuItem>&& items);
